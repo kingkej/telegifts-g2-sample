@@ -257,12 +257,58 @@ export async function transcribeWithEphemeralAiOrFallback(
   return null
 }
 
+export interface GiftiAnswerResult {
+  title: string
+  answer: string
+  collection: string
+  /** Whether a collection 7d chart should accompany this answer (false for greetings, capability help, and off-topic replies). */
+  showChart?: boolean
+}
+
 const SELLER_FEES: Record<string, number> = {
   Portals: 2.5,
   MRKT: 2.5,
   Tonnel: 3.0,
   Fragment: 5.0,
   Getgems: 5.0,
+}
+
+const CAPABILITY_OR_HELP_RE =
+  /\b(what can you do|what do you do|who are you|what are you|what is gifti|how (?:do i|can i|to) use|how does (?:this|it|gifti) work|capabilities|commands|features|\bhelp\b|what should i ask)\b/i
+
+const PURE_GREETING_RE =
+  /^\s*(hi|hello|hey|yo|sup|hola|howdy|greetings|good\s+(morning|afternoon|evening)|gm|gn)(\s+(gifti|there|bot|ai|friend))?[!.,?\s]*$/i
+
+const PURE_THANKS_RE =
+  /^\s*(thanks|thank you|thx|ty|cool|nice|awesome|great|got it)(\s+gifti)?[!.,?\s]*$/i
+
+const CONTROLS_OR_STANDALONE_RE =
+  /\b(gesture|gestures|swipe|double[- ]?tap|head[- ]?nod|head[- ]?shake|\bimu\b|r1 ring|\bring\b|temple|how to control|voice command|voice commands|offline|standalone|without phone)\b/i
+
+const MARKET_ANALYSIS_SIGNAL_RE =
+  /\b(arb|arbitrage|spread|spreads|flip|flips|deal|deals|venue|venues|marketplace|marketplaces|fee|fees|cheap|cheapest|under|starter|affordable|budget|expensive|priciest|blue[- ]?chip|blue[- ]?chips|highest|lowest|rare|rarest|model|models|tier|tiers|variant|variants|grail|grails|permille|whale|whales|holder|holders|supply|emission|upgraded|health|greed|safe|risk|floor|floors|price|prices|worth|cost|chart|charts|trend|trending|momentum|gainer|gainers|loser|losers|mover|movers|dip|dipped|drop|dropped|pump|pumping|market|overview|summary|pulse|buy|buying|sell|selling|hold|holding|compare|vs|versus|stats|metrics|doing|perform|performance|hot)\b/i
+
+export function classifyNonMarketGiftiIntent(
+  question: string,
+  hasMentionedCollection: boolean,
+): 'capability' | 'thanks' | 'controls' | 'off-topic' | null {
+  if (hasMentionedCollection) return null
+  const trimmed = question.trim()
+  if (!trimmed) return 'capability'
+  if (PURE_THANKS_RE.test(trimmed)) return 'thanks'
+  if (CONTROLS_OR_STANDALONE_RE.test(trimmed) && !MARKET_ANALYSIS_SIGNAL_RE.test(trimmed)) {
+    return 'controls'
+  }
+  if (PURE_GREETING_RE.test(trimmed) || CAPABILITY_OR_HELP_RE.test(trimmed)) {
+    // If the user greeted AND asked a concrete market question (e.g. "hello what is best arbitrage?"), let market routing handle it unless they asked what Gifti can do.
+    if (!CAPABILITY_OR_HELP_RE.test(trimmed) && MARKET_ANALYSIS_SIGNAL_RE.test(trimmed)) return null
+    return 'capability'
+  }
+  const hasBudgetNumber = /(\d+(?:\.\d+)?)\s*(ton|gram|usd|usdt|\$)/i.test(trimmed) || /\$\s*\d+/.test(trimmed)
+  if (!hasBudgetNumber && !MARKET_ANALYSIS_SIGNAL_RE.test(trimmed)) {
+    return 'off-topic'
+  }
+  return null
 }
 
 function buildGroundedMarketBriefing(catalog: CollectionFloorsResponse | null, focused: string): string {
@@ -289,36 +335,83 @@ function buildGroundedMarketBriefing(catalog: CollectionFloorsResponse | null, f
   return `Spot TON/GRAM = $${usdt.toFixed(2)} USDT.\nFocused gift: ${focused}.\n${rows.join('\n')}`
 }
 
-function buildFreeDemoGiftiReply(
+export function buildFreeDemoGiftiReply(
   question: string,
   defaultCollection: string,
   catalog: CollectionFloorsResponse | null,
-  options?: { consumeFreeTurn?: boolean },
-): { title: string; answer: string; collection: string } {
+  options?: { consumeFreeTurn?: boolean; includeQuotaTag?: boolean },
+): GiftiAnswerResult {
   const names = Object.keys(catalog?.collection_floors ?? {})
   const qNorm = resolveDeepLinkMatchKey(question)
   const lower = question.toLowerCase()
   const usdt = getLatestTonUsdtSnapshot().usd || DEFAULT_USDT_PER_GRAM
   const consumeTurn = options?.consumeFreeTurn !== false
+  const includeQuotaTag = options?.includeQuotaTag !== false
 
   const mentioned = names.filter(n => {
     const k = resolveDeepLinkMatchKey(n)
     return k.length >= 4 && qNorm.includes(k)
   })
   const primary = mentioned[0] ?? (names.includes(defaultCollection) ? defaultCollection : names[0] ?? 'Plush Pepe')
+  const metaIntent = classifyNonMarketGiftiIntent(question, mentioned.length > 0)
+
+  // Always answer greetings, capability help, thanks, and G2 control questions naturally without consuming a free turn!
+  if (metaIntent === 'capability') {
+    return {
+      title: 'Gifti · G2 Market Copilot',
+      collection: primary,
+      showChart: false,
+      answer:
+        "Hi! I'm Gifti, your Telegram Collectible Gifts copilot on Even G2. Ask me: 1) best 5-venue arbitrage right now, 2) top 24h movers or market pulse, 3) compare gifts (Plush Pepe vs Astral Shard), or 4) rare ‰ tiers, whale risk & budget picks.",
+    }
+  }
+
+  if (metaIntent === 'thanks') {
+    return {
+      title: 'Gifti · G2 Market Copilot',
+      collection: primary,
+      showChart: false,
+      answer:
+        'Happy to help! Ask anytime about gift floors, 5-venue net arbitrage, top 24h movers, rare ‰ model tiers, or whale concentration.',
+    }
+  }
+
+  if (metaIntent === 'controls') {
+    return {
+      title: 'Gifti · G2 & R1 Controls',
+      collection: primary,
+      showChart: false,
+      answer:
+        'Swipe G2 temple or R1 Ring to browse, Tap to inspect, 2×Tap to go back, Hold Ring to speak (offline WASM), and Head-Nod/Shake on live /ask alerts. All 24 gift collections & speech run standalone in Even App with zero backend.',
+    }
+  }
 
   if (consumeTurn && freeTurnsRemaining <= 0) {
     return {
       title: 'Gifti · Demo Limit',
       collection: primary,
-      answer: '20/20 free demo messages used in this session. Paste a 1-time OpenAI, Gemini, or Groq key (RAM-only, never saved) for unlimited live AI turns.',
+      showChart: false,
+      answer:
+        '20/20 free demo messages used in this session. Paste a 1-time OpenAI, Gemini, or Groq key (RAM-only, never saved) for unlimited live AI turns.',
+    }
+  }
+
+  if (metaIntent === 'off-topic') {
+    return {
+      title: 'Gifti · G2 Market Copilot',
+      collection: primary,
+      showChart: false,
+      answer:
+        "I'm tuned for Telegram Collectible Gifts on Even G2 — try asking about a gift floor (e.g. Plush Pepe), best 5-venue arbitrage, top 24h movers, whale health, or rare ‰ model tiers.",
     }
   }
 
   if (consumeTurn) {
     freeTurnsRemaining = Math.max(0, freeTurnsRemaining - 1)
   }
-  const tag = consumeTurn ? `[${freeTurnsRemaining}/${FREE_DEMO_TURNS_TOTAL} free]` : '[local fallback]'
+  const tag = includeQuotaTag
+    ? (consumeTurn ? ` [${freeTurnsRemaining}/${FREE_DEMO_TURNS_TOTAL} free]` : ' [local fallback]')
+    : ''
 
   // 1. Two-collection comparison
   if (mentioned.length >= 2) {
@@ -330,12 +423,16 @@ function buildFreeDemoGiftiReply(
     return {
       title: `Gifti · ${a} vs ${b}`,
       collection: a,
-      answer: `${a}: ${formatCompanionPrice(fa?.price ?? 0)} GRAM (${fa?.marketplace ?? 'Portals'}, 7d ${formatMarketChange(ca)}) vs ${b}: ${formatCompanionPrice(fb?.price ?? 0)} GRAM (${fb?.marketplace ?? 'Portals'}, 7d ${formatMarketChange(cb)}). ${tag}`,
+      showChart: true,
+      answer: `${a}: ${formatCompanionPrice(fa?.price ?? 0)} GRAM (${fa?.marketplace ?? 'Portals'}, 7d ${formatMarketChange(ca)}) vs ${b}: ${formatCompanionPrice(fb?.price ?? 0)} GRAM (${fb?.marketplace ?? 'Portals'}, 7d ${formatMarketChange(cb)}).${tag}`,
     }
   }
 
-  // 2. Cross-catalog best arbitrage scan
-  if (/\b(best|top|highest)\b.*\b(arb|spread|flip|deal)\b/.test(lower)) {
+  // 2. Cross-catalog best arbitrage scan (explicit "best/top/any/find arb" or market-wide arb query with no single gift named)
+  if (
+    /\b(best|top|highest|any|find|scan|good)\b.*\b(arb|arbitrage|spread|flip|flips|deal|deals)\b/.test(lower)
+    || (mentioned.length === 0 && /\b(arb|arbitrage|flip|flips)\b/.test(lower) && !/\bvenue spread arbitrage\b/.test(lower))
+  ) {
     let bestPick = { name: primary, net: -Infinity, buyV: 'Portals', buyP: 0, sellV: 'Fragment', sellP: 0 }
     for (const name of names) {
       const quotes = getVenueQuotes(catalog?.collection_floors[name])
@@ -351,15 +448,85 @@ function buildFreeDemoGiftiReply(
     return {
       title: `Gifti · Best Arbitrage`,
       collection: bestPick.name,
-      answer: `Top net spread is ${bestPick.name}: buy ${bestPick.buyV} @ ${formatCompanionPrice(bestPick.buyP)} GRAM, list ${bestPick.sellV} @ ${formatCompanionPrice(bestPick.sellP)} GRAM (+${formatCompanionPrice(Math.max(0, bestPick.net))} GRAM net of fees). ${tag}`,
+      showChart: true,
+      answer: `Top net spread is ${bestPick.name}: buy ${bestPick.buyV} @ ${formatCompanionPrice(bestPick.buyP)} GRAM, list ${bestPick.sellV} @ ${formatCompanionPrice(bestPick.sellP)} GRAM (+${formatCompanionPrice(Math.max(0, bestPick.net))} GRAM net of fees).${tag}`,
     }
   }
 
-  // 3. Budget / cheap entry recommendation
-  const budgetMatch = /(\d+(?:\.\d+)?)\s*(ton|gram|usd|usdt|\$)/i.exec(question)
-  if (budgetMatch || /\b(cheap|under|starter|affordable|budget)\b/.test(lower)) {
+  // 3. Marketplace fee schedule comparison (when no specific gift is requested)
+  if (mentioned.length === 0 && /\b(fee|fees|lowest fee|cheapest marketplace|which marketplace|which venue)\b/.test(lower)) {
+    return {
+      title: 'Gifti · 5-Venue Seller Fees',
+      collection: primary,
+      showChart: false,
+      answer: `TON Gift marketplace seller fees: Portals 2.5%, MRKT 2.5%, Tonnel 3.0%, Fragment 5.0%, Getgems 5.0%. Always subtract seller fee before flipping.${tag}`,
+    }
+  }
+
+  // 4. Most expensive / blue-chip collections across the market
+  if (
+    mentioned.length === 0
+    && /\b(most expensive|priciest|highest floor|top floor|blue[- ]?chip|blue[- ]?chips|top collections)\b/.test(lower)
+  ) {
+    const rankedByFloor = names
+      .map(n => ({ name: n, best: getCheapestVenueFloor(catalog?.collection_floors[n]) }))
+      .filter((x): x is { name: string; best: NonNullable<typeof x.best> } => Boolean(x.best))
+      .sort((a, b) => b.best.price - a.best.price)
+    if (rankedByFloor.length >= 3) {
+      const [c1, c2, c3] = [rankedByFloor[0]!, rankedByFloor[1]!, rankedByFloor[2]!]
+      return {
+        title: 'Gifti · Blue-Chip Leaders',
+        collection: c1.name,
+        showChart: true,
+        answer: `Highest floors: 1) ${c1.name} ${formatCompanionPrice(c1.best.price)} GRAM (${c1.best.marketplace}), 2) ${c2.name} ${formatCompanionPrice(c2.best.price)} GRAM, 3) ${c3.name} ${formatCompanionPrice(c3.best.price)} GRAM.${tag}`,
+      }
+    }
+  }
+
+  // 5. Market-wide pulse / top movers / gainers / pullbacks (when no single gift is named)
+  if (
+    mentioned.length === 0
+    && /\b(market|overview|summary|pulse|mover|movers|gainer|gainers|trending|hot|loser|losers|dip|dipped|drop|dropped|what changed)\b/.test(lower)
+  ) {
+    const ranked24h = names
+      .map(n => ({
+        name: n,
+        best: getCheapestVenueFloor(catalog?.collection_floors[n]),
+        ch24: getCollectionPeriodChange(n, '24h') ?? 0,
+        health: getCollectionMetrics(n)?.healthScore ?? 80,
+      }))
+      .filter(x => Boolean(x.best))
+      .sort((a, b) => b.ch24 - a.ch24)
+
+    if (ranked24h.length >= 2) {
+      if (/\b(loser|losers|dip|dipped|drop|dropped)\b/.test(lower)) {
+        const d1 = ranked24h.at(-1)!
+        const d2 = ranked24h.at(-2)!
+        return {
+          title: 'Gifti · 24h Pullbacks',
+          collection: d1.name,
+          showChart: true,
+          answer: `Biggest 24h pullbacks across ${ranked24h.length} gifts: ${d1.name} (${formatMarketChange(d1.ch24)} @ ${formatCompanionPrice(d1.best!.price)} GRAM) and ${d2.name} (${formatMarketChange(d2.ch24)} @ ${formatCompanionPrice(d2.best!.price)} GRAM).${tag}`,
+        }
+      }
+      const g1 = ranked24h[0]!
+      const g2 = ranked24h[1]!
+      const d1 = ranked24h.at(-1)!
+      const avgHealth = Math.round(ranked24h.reduce((s, x) => s + x.health, 0) / ranked24h.length)
+      return {
+        title: 'Gifti · 24h Market Pulse',
+        collection: g1.name,
+        showChart: true,
+        answer: `Tracking ${ranked24h.length} gifts (avg Health ${avgHealth}/100): top 24h gainers ${g1.name} (${formatMarketChange(g1.ch24)}, ${formatCompanionPrice(g1.best!.price)} GRAM) & ${g2.name} (${formatMarketChange(g2.ch24)}); sharpest dip ${d1.name} (${formatMarketChange(d1.ch24)}).${tag}`,
+      }
+    }
+  }
+
+  // 6. Budget / cheap entry recommendation
+  const budgetMatch = /(\d+(?:\.\d+)?)\s*(ton|gram|usd|usdt|\$)/i.exec(question) ?? /\$\s*(\d+(?:\.\d+)?)/i.exec(question)
+  if (budgetMatch || (mentioned.length === 0 && /\b(cheap|cheapest|under|starter|affordable|budget)\b/.test(lower))) {
     const rawAmt = budgetMatch ? Number(budgetMatch[1]) : 100
-    const isUsd = budgetMatch ? /usd|\$/i.test(budgetMatch[2]!) : false
+    const isUsd = budgetMatch ? (/usd|\$/i.test(budgetMatch[2] ?? '') || question.includes('$')) : false
     const capGram = isUsd ? rawAmt / usdt : rawAmt
     const candidates = names
       .map(n => ({ name: n, best: getCheapestVenueFloor(catalog?.collection_floors[n]), ch7: getCollectionPeriodChange(n, '7d') ?? 0 }))
@@ -370,12 +537,13 @@ function buildFreeDemoGiftiReply(
       return {
         title: `Gifti · Under ${Math.round(capGram)} GRAM`,
         collection: pick.name,
-        answer: `Best momentum under ${Math.round(capGram)} GRAM: ${pick.name} at ${formatCompanionPrice(pick.best!.price)} GRAM ($${formatCompanionPrice(Number((pick.best!.price * usdt).toFixed(2)))}) on ${pick.best!.marketplace} (${formatMarketChange(pick.ch7)} 7d). ${tag}`,
+        showChart: true,
+        answer: `Best momentum under ${Math.round(capGram)} GRAM: ${pick.name} at ${formatCompanionPrice(pick.best!.price)} GRAM ($${formatCompanionPrice(Number((pick.best!.price * usdt).toFixed(2)))}) on ${pick.best!.marketplace} (${formatMarketChange(pick.ch7)} 7d).${tag}`,
       }
     }
   }
 
-  // 4. Focused collection deep answer (rarity / whale / spread / general)
+  // 7. Focused collection deep answer (arbitrage / rarity / whale / floor & momentum)
   const quotes = getVenueQuotes(catalog?.collection_floors[primary])
   const best = quotes[0]
   const high = quotes.at(-1)
@@ -383,23 +551,41 @@ function buildFreeDemoGiftiReply(
   const ch24 = getCollectionPeriodChange(primary, '24h') ?? 0
   const ch7 = getCollectionPeriodChange(primary, '7d') ?? 0
 
-  if (/\b(rare|model|tier|variant|grail)\b/.test(lower)) {
-    const rarest = [...getBundledModels(primary)].sort((a, b) => (a.rarityPermille ?? 99) - (b.rarityPermille ?? 99))[0]
-    const rf = rarest ? getCheapestVenueFloor(rarest.floors) : null
+  if (/\b(arb|arbitrage|spread|venue|venues|compare|flip)\b/.test(lower) && best && high && quotes.length >= 2) {
+    const feePct = SELLER_FEES[high.marketplace] ?? 5
+    const netGram = Number((high.price * (1 - feePct / 100) - best.price).toFixed(2))
+    const grossPct = Number((((high.price - best.price) / best.price) * 100).toFixed(2))
+    const edge =
+      netGram > 0
+        ? `net +${formatCompanionPrice(netGram)} GRAM after ${feePct}% ${high.marketplace} fee`
+        : `fee-locked (${formatCompanionPrice(netGram)} GRAM after ${feePct}% fee vs +${grossPct}% gross)`
     return {
-      title: `Gifti · ${primary}`,
+      title: `Gifti · ${primary} Arbitrage`,
       collection: primary,
-      answer: rarest && rf
-        ? `${primary} grail tier is ${rarest.name} (${rarest.rarityPermille ?? 5}‰) at ${formatCompanionPrice(rf.price)} GRAM on ${rf.marketplace} (${best ? (rf.price / best.price).toFixed(2) : '1.5'}× base floor). ${tag}`
-        : `${primary} base floor is ${formatCompanionPrice(best?.price ?? 0)} GRAM on ${best?.marketplace ?? 'Portals'}. ${tag}`,
+      showChart: true,
+      answer: `${primary} across ${quotes.length} venues: lowest ${formatCompanionPrice(best.price)} GRAM on ${best.marketplace} vs ${formatCompanionPrice(high.price)} GRAM on ${high.marketplace} — ${edge}.${tag}`,
     }
   }
 
-  if (/\b(whale|holder|supply|health|greed|safe|risk)\b/.test(lower)) {
+  if (/\b(rare|rarest|model|models|tier|tiers|variant|variants|grail|permille)\b/.test(lower)) {
+    const rarest = [...getBundledModels(primary)].sort((a, b) => (a.rarityPermille ?? 99) - (b.rarityPermille ?? 99))[0]
+    const rf = rarest ? getCheapestVenueFloor(rarest.floors) : null
     return {
-      title: `Gifti · ${primary}`,
+      title: `Gifti · ${primary} Rare Tiers`,
       collection: primary,
-      answer: `${primary} Health ${m?.healthScore ?? 82}/100, Greed ${m?.greedScore ?? 65}/100. Top-30 whales hold ${m?.whaleHoldPercent ?? 15}% across ${formatCompanionPrice(m?.uniqueOwners ?? 4200)} owners. ${tag}`,
+      showChart: true,
+      answer: rarest && rf
+        ? `${primary} grail tier is ${rarest.name} (${rarest.rarityPermille ?? 5}‰) at ${formatCompanionPrice(rf.price)} GRAM on ${rf.marketplace} (${best ? (rf.price / best.price).toFixed(2) : '1.5'}× base floor).${tag}`
+        : `${primary} base floor is ${formatCompanionPrice(best?.price ?? 0)} GRAM on ${best?.marketplace ?? 'Portals'}.${tag}`,
+    }
+  }
+
+  if (/\b(whale|whales|holder|holders|supply|emission|upgraded|health|greed|safe|risk)\b/.test(lower)) {
+    return {
+      title: `Gifti · ${primary} Fundamentals`,
+      collection: primary,
+      showChart: true,
+      answer: `${primary} Health ${m?.healthScore ?? 82}/100, Greed ${m?.greedScore ?? 65}/100. Top-30 whales hold ${m?.whaleHoldPercent ?? 15}% across ${formatCompanionPrice(m?.uniqueOwners ?? 4200)} owners.${tag}`,
     }
   }
 
@@ -410,7 +596,8 @@ function buildFreeDemoGiftiReply(
   return {
     title: `Gifti · ${primary}`,
     collection: primary,
-    answer: `${primary} trades at ${formatCompanionPrice(best?.price ?? 0)} GRAM (≈ $${formatCompanionPrice(Number(((best?.price ?? 0) * usdt).toFixed(2)))}) — 24h ${formatMarketChange(ch24)}, 7d ${formatMarketChange(ch7)}.${spreadPart} ${tag}`,
+    showChart: true,
+    answer: `${primary} trades at ${formatCompanionPrice(best?.price ?? 0)} GRAM (≈ $${formatCompanionPrice(Number(((best?.price ?? 0) * usdt).toFixed(2)))}) — 24h ${formatMarketChange(ch24)}, 7d ${formatMarketChange(ch7)}.${spreadPart}${tag}`,
   }
 }
 
@@ -420,7 +607,7 @@ export async function askGiftiAiQuestion(
   catalog: CollectionFloorsResponse | null,
   signal?: AbortSignal,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ title: string; answer: string; collection: string }> {
+): Promise<GiftiAnswerResult> {
   signal?.throwIfAborted()
   const cleanQuestion = question.trim()
   lastTranscript = cleanQuestion || lastTranscript
@@ -430,12 +617,13 @@ export async function askGiftiAiQuestion(
 
   const names = Object.keys(catalog?.collection_floors ?? {})
   const qNorm = resolveDeepLinkMatchKey(cleanQuestion)
+  const explicitMention = names.find(n => {
+    const k = resolveDeepLinkMatchKey(n)
+    return k.length >= 4 && qNorm.includes(k)
+  })
   const matchedCollection =
-    names.find(n => {
-      const k = resolveDeepLinkMatchKey(n)
-      return k.length >= 4 && qNorm.includes(k)
-    })
-    ?? (names.includes(defaultCollection) ? defaultCollection : names[0] ?? 'Plush Pepe')
+    explicitMention ?? (names.includes(defaultCollection) ? defaultCollection : names[0] ?? 'Plush Pepe')
+  const metaIntent = classifyNonMarketGiftiIntent(cleanQuestion, Boolean(explicitMention))
 
   const hadEphemeralKey = Boolean(ephemeralApiKey && ephemeralProvider)
 
@@ -444,9 +632,13 @@ export async function askGiftiAiQuestion(
       const activeKey = ephemeralApiKey
       const activeProvider = ephemeralProvider
       const systemPrompt =
-        'You are Gifti, a concise Telegram Collectible Gifts analyst displayed on Even Realities G2 smart glasses (576x288 HUD). ' +
-        'Answer in 1-2 crisp sentences (max 210 characters) using exact GRAM/USDT prices and venue names from the provided market context. Never invent prices.\n\n' +
+        'You are Gifti, the Telegram Collectible Gifts AI copilot displayed on Even Realities G2 smart glasses (576x288 HUD) and R1 Ring. ' +
+        'If the user greets you or asks what you can do, introduce yourself warmly in 1-2 crisp sentences and mention your capabilities: scanning 5-venue net arbitrage (Portals, Tonnel, MRKT, Fragment, Getgems), comparing gift floors & 24h/7d momentum, checking rare permille (‰) model tiers & whale health, and beaming charts to Telegram. ' +
+        'For market questions, answer in 1-2 crisp sentences (max 210 characters) using exact GRAM/USDT prices and venue names from the provided market context. Never invent prices.\n\n' +
         buildGroundedMarketBriefing(catalog, matchedCollection)
+
+      const liveTitle = metaIntent ? 'Gifti AI · G2 Copilot' : `Gifti AI · ${matchedCollection}`
+      const liveShowChart = !metaIntent
 
       if (activeProvider === 'openai' || activeProvider === 'groq') {
         const endpoint =
@@ -476,8 +668,9 @@ export async function askGiftiAiQuestion(
         const reply = data.choices?.[0]?.message?.content?.trim()
         if (!reply) throw new Error(`${activeProvider.toUpperCase()} returned empty reply`)
         return {
-          title: `Gifti AI · ${matchedCollection}`,
+          title: liveTitle,
           collection: matchedCollection,
+          showChart: liveShowChart,
           answer: reply,
         }
       } else if (activeProvider === 'gemini') {
@@ -508,8 +701,9 @@ export async function askGiftiAiQuestion(
         const reply = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
         if (!reply) throw new Error('Gemini returned empty reply')
         return {
-          title: `Gifti AI · ${matchedCollection}`,
+          title: liveTitle,
           collection: matchedCollection,
+          showChart: liveShowChart,
           answer: reply,
         }
       }

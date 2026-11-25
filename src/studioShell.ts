@@ -135,11 +135,12 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
       </div>
 
       <form class="tg-ai-form" id="tgGiftiForm">
-        <input type="text" class="tg-input" id="tgGiftiInput" placeholder="Or ask Gifti anything (e.g. 'Best net arbitrage right now?' or 'Compare Plush Pepe and Astral Shard')" />
+        <input type="text" class="tg-input" id="tgGiftiInput" placeholder="Ask Gifti anything (e.g. 'Hello, what can you do?', 'Top 24h movers?', or 'Compare Plush Pepe and Astral Shard')" />
         <button type="submit" class="tg-btn tg-btn--primary">Ask Gifti</button>
       </form>
 
       <div class="tg-presets" id="tgVoicePresets">
+        <button type="button" class="tg-preset-chip" data-gifti="Hello, what can you do?">👋 "What can you do?"</button>
         <button type="button" class="tg-preset-chip" data-voice="open Plush Pepe">🎙 "Open Plush Pepe"</button>
         <button type="button" class="tg-preset-chip" data-voice="show the seven day chart">🎙 "Show 7d chart"</button>
         <button type="button" class="tg-preset-chip" data-voice="show venue spread">🎙 "Show venue spread"</button>

@@ -20,6 +20,11 @@ import {
   getVenueQuotes,
 } from './bundledMarketData.ts'
 import { mirrorKeyToEvenHost, subscribeHostStorageHydration } from './evenHostStorage.ts'
+import {
+  buildFreeDemoGiftiReply,
+  classifyNonMarketGiftiIntent,
+  type GiftiAnswerResult,
+} from './giftiAiBridge.ts'
 import { getLatestTonUsdtSnapshot } from './liveTicker.ts'
 import { renderSpreadChart } from '../spreadChart.ts'
 
@@ -61,7 +66,7 @@ export interface CollectorToolDeps {
     question: string,
     focusedCollection: string,
     signal: AbortSignal,
-  ): Promise<{ title: string; answer: string; collection: string }>
+  ): Promise<GiftiAnswerResult>
   onWatchArmed?(rule: PriceWatchRule): void
   onSimulateWatchHit?(rule: PriceWatchRule, observedPrice: number, simulated?: boolean): void
 }
@@ -345,16 +350,35 @@ function answerGiftiQuery(
   rawQuery: string,
   focusedCollection: string,
   deps: CollectorToolDeps,
-): { title: string; answer: string; collection: string } {
+): GiftiAnswerResult {
   const catalog = deps.getCatalog()
   const names = Object.keys(catalog?.collection_floors ?? {})
+  const qNorm = resolveDeepLinkMatchKey(rawQuery)
   const qLower = rawQuery.toLowerCase()
-  const matchedName =
-    names.find(n => {
-      const k = resolveDeepLinkMatchKey(n)
-      return k.length >= 4 && resolveDeepLinkMatchKey(rawQuery).includes(k)
-    }) ?? focusedCollection
+  const mentioned = names.filter(n => {
+    const k = resolveDeepLinkMatchKey(n)
+    return k.length >= 4 && qNorm.includes(k)
+  })
+  const isPresetQuery =
+    rawQuery === 'floor chart momentum'
+    || rawQuery === 'venue spread arbitrage'
+    || rawQuery === 'whale supply health greed'
+    || rawQuery === 'rare model variant tier'
 
+  if (
+    !isPresetQuery
+    && (mentioned.length >= 2
+      || classifyNonMarketGiftiIntent(rawQuery, mentioned.length > 0) !== null
+      || (mentioned.length === 0
+        && /\b(best|top|highest|any|find|scan|good|most expensive|priciest|blue[- ]?chip|market|overview|summary|pulse|mover|movers|gainer|gainers|trending|loser|losers|dip|dipped|what changed|fee|fees|cheap|under|budget)\b/.test(qLower)))
+  ) {
+    return buildFreeDemoGiftiReply(rawQuery, focusedCollection, catalog, {
+      consumeFreeTurn: false,
+      includeQuotaTag: false,
+    })
+  }
+
+  const matchedName = mentioned[0] ?? focusedCollection
   const floors = catalog?.collection_floors[matchedName]
   const best = getCheapestVenueFloor(floors)
   const usdtRate = resolveEffectiveUsdtRate(deps)
@@ -373,6 +397,7 @@ function answerGiftiQuery(
       return {
         title: `Gifti · ${matchedName} Arbitrage`,
         collection: matchedName,
+        showChart: true,
         answer: `${matchedName} trades across ${arb.venueCount} venues: lowest ask ${formatCompanionPrice(arb.buy.price)} GRAM on ${arb.buy.marketplace} vs ${formatCompanionPrice(arb.sell.price)} GRAM on ${arb.sell.marketplace} — ${edge}.`,
       }
     }
@@ -385,6 +410,7 @@ function answerGiftiQuery(
     return {
       title: `Gifti · ${matchedName} Rare Tiers`,
       collection: matchedName,
+      showChart: true,
       answer: rarest && rarestFloor
         ? `${matchedName} rarest tracked tier is ${rarest.name} (${rarest.rarityPermille ?? 5}‰ rarity) at ${formatCompanionPrice(rarestFloor)} GRAM${mult ? ` (${mult}× collection floor)` : ''}.`
         : `${matchedName} model tier floors are loading.`,
@@ -396,6 +422,7 @@ function answerGiftiQuery(
     return {
       title: `Gifti · ${matchedName} Fundamentals`,
       collection: matchedName,
+      showChart: true,
       answer: `${matchedName} Health ${metrics?.healthScore ?? 80}/100, Greed ${metrics?.greedScore ?? 65}/100. ${upgPct}% upgraded supply with top-30 whales holding ${metrics?.whaleHoldPercent ?? 15.2}%.`,
     }
   }
@@ -406,6 +433,7 @@ function answerGiftiQuery(
   return {
     title: `Gifti · ${matchedName}`,
     collection: matchedName,
+    showChart: true,
     answer: `${matchedName} floor is ${floorStr}. 24h ${move24}, 7d ${move7}${arb ? `, ${arb.venueCount}-venue spread +${arb.grossPct}%` : ''}.`,
   }
 }
@@ -418,11 +446,13 @@ function createGiftiCopilotController(
   let topicIndex = 0
   let isOpen = false
   let talkLaunchSeq = 0
+  let answerSeq = 0
   let recordingAbort: AbortController | null = null
   let promptAbort: AbortController | null = null
   let isRecording = false
   let foregroundAvailable = true
-  let lastAnswer: { title: string; answer: string; collection: string } | null = null
+  let lastAnswer: GiftiAnswerResult | null = null
+  let lastQuestionLabel: string | null = null
 
   const topics = [
     { id: 'momentum', label: 'Floor & 7d momentum', query: 'floor chart momentum' },
@@ -435,9 +465,15 @@ function createGiftiCopilotController(
     for (const listener of listeners) listener()
   }
 
-  function computeActiveAnswer() {
+  function computeActiveAnswer(): GiftiAnswerResult {
     if (lastAnswer) return lastAnswer
     return answerGiftiQuery(topics[topicIndex]!.query, collection, deps)
+  }
+
+  function formatAskedLabel(rawQuestion: string): string {
+    const clean = rawQuestion.replace(/\s+/g, ' ').trim()
+    const excerpt = clean.length > 64 ? `${clean.slice(0, 63)}…` : clean
+    return `Asked: "${excerpt}"`
   }
 
   function cancelVoiceTurn(shouldNotify: boolean) {
@@ -454,12 +490,13 @@ function createGiftiCopilotController(
   async function resolveQuestionAnswer(
     question: string,
     signal: AbortSignal,
-  ): Promise<{ title: string; answer: string; collection: string }> {
+  ): Promise<GiftiAnswerResult> {
     if (deps.askGiftiQuestion) {
       const res = await deps.askGiftiQuestion(question, collection, signal)
       return {
         title: res.title,
         answer: res.answer,
+        showChart: res.showChart,
         collection: resolveCollectionName(deps.getCatalog(), res.collection || collection),
       }
     }
@@ -470,35 +507,46 @@ function createGiftiCopilotController(
     const trimmed = rawPrompt.trim()
     if (!trimmed) return
     cancelVoiceTurn(false)
+    const askedLabel = formatAskedLabel(trimmed)
     if (!deps.askGiftiQuestion) {
+      lastQuestionLabel = askedLabel
       lastAnswer = answerGiftiQuery(trimmed, collection, deps)
+      answerSeq++
       collection = lastAnswer.collection
       notify()
       return
     }
     const abort = new AbortController()
     promptAbort = abort
+    lastQuestionLabel = askedLabel
     lastAnswer = {
-      title: `Gifti · Thinking…`,
+      title: 'Gifti · Thinking…',
       collection,
-      answer: `Analyzing "${trimmed.slice(0, 72)}" across 5 TON marketplaces…`,
+      showChart: false,
+      answer: `Checking 5 TON Gift marketplaces…`,
     }
+    answerSeq++
     notify()
     try {
       const resolved = await resolveQuestionAnswer(trimmed, abort.signal)
       if (abort.signal.aborted || promptAbort !== abort) return
       promptAbort = null
+      lastQuestionLabel = askedLabel
       lastAnswer = resolved
+      answerSeq++
       collection = resolved.collection
       notify()
     } catch {
       if (!abort.signal.aborted && promptAbort === abort) {
         promptAbort = null
+        lastQuestionLabel = askedLabel
         lastAnswer = {
           title: `Gifti · ${collection}`,
           collection,
+          showChart: false,
           answer: 'Could not reach Gifti right now — please try again.',
         }
+        answerSeq++
         notify()
       }
     }
@@ -525,18 +573,23 @@ function createGiftiCopilotController(
         const trimmed = spoken?.trim() ?? ''
         if (!trimmed) {
           recordingAbort = null
+          lastQuestionLabel = 'Voice capture · G2 microphone'
           lastAnswer = {
-            title: `Gifti · ${collection}`,
+            title: 'Gifti · Voice Capture',
             collection,
-            answer: "Didn't catch a recognized question — try 'arbitrage', 'rare models', 'whale risk', or 'floor momentum'.",
+            showChart: false,
+            answer: "Didn't catch a recognized question — try 'what can you do', 'best arbitrage', 'top movers', or 'whale risk'.",
           }
+          answerSeq++
           notify()
           return
         }
         const resolved = await resolveQuestionAnswer(trimmed, abort.signal)
         if (abort.signal.aborted || recordingAbort !== abort) return
         recordingAbort = null
+        lastQuestionLabel = formatAskedLabel(trimmed)
         lastAnswer = resolved
+        answerSeq++
         collection = resolved.collection
         notify()
       })
@@ -556,13 +609,39 @@ function createGiftiCopilotController(
         key: 'gifti-recording',
         title: active.title,
         lines: [active.answer, 'Listening on G2 microphone…'],
-        actions: [{ id: 'show-chart', label: 'Show 7d chart' }],
+        actions: active.showChart !== false ? [{ id: 'show-chart', label: 'Show 7d chart' }] : [],
+      }
+    }
+
+    if (lastAnswer) {
+      const includeChart = active.showChart !== false
+      return {
+        key: `gifti-qa-${answerSeq}-${active.collection}`,
+        title: active.title,
+        lines: [
+          lastQuestionLabel ?? 'Gifti Q&A',
+          active.answer,
+        ],
+        actions: [
+          ...(includeChart ? [{ id: 'show-chart', label: 'Open 7d chart' }] : []),
+          ...(deps.recordVoiceQuestion ? [{ id: 'ask-voice', label: 'Ask via G2 mic' }] : []),
+          { id: 'browse-topics', label: 'Browse 4 preset topics' },
+          ...(deps.sendTelegramCard ? [{ id: 'send-dm', label: 'Send to Telegram DM' }] : []),
+        ],
+        ...(includeChart
+          ? {
+              chart: {
+                collection: active.collection,
+                series: buildBundledFloorSeries(active.collection, '7d'),
+              },
+            }
+          : {}),
       }
     }
 
     const promptLabel = topics[topicIndex]!.label
     return {
-      key: `gifti-${active.collection}-${topicIndex}-${lastAnswer ? 'voice' : 'preset'}`,
+      key: `gifti-${active.collection}-${topicIndex}-preset`,
       title: `${active.title} · ${topicIndex + 1}/${topics.length}`,
       lines: [
         `Topic: ${promptLabel}`,
@@ -599,6 +678,7 @@ function createGiftiCopilotController(
       collection = resolveCollectionName(deps.getCatalog(), ctx?.collection)
       topicIndex = 0
       lastAnswer = null
+      lastQuestionLabel = null
       isRecording = false
       const seq = ++talkLaunchSeq
       if (ctx?.entry === 'talk' && deps.recordVoiceQuestion && foregroundAvailable) {
@@ -609,12 +689,18 @@ function createGiftiCopilotController(
       }
     },
     act(id) {
-      if (id === 'prev' && topicIndex > 0) {
+      if (id === 'browse-topics') {
         lastAnswer = null
+        lastQuestionLabel = null
+        notify()
+      } else if (id === 'prev' && topicIndex > 0) {
+        lastAnswer = null
+        lastQuestionLabel = null
         topicIndex--
         notify()
       } else if (id === 'next' && topicIndex < topics.length - 1) {
         lastAnswer = null
+        lastQuestionLabel = null
         topicIndex++
         notify()
       } else if (id === 'show-chart') {
@@ -628,7 +714,7 @@ function createGiftiCopilotController(
           title: active.title,
           text: active.answer,
           collection: active.collection,
-          attachKind: '7d',
+          ...(active.showChart !== false ? { attachKind: '7d' } : {}),
           target: 'private',
         })
       }

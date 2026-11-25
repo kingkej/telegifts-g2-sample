@@ -238,3 +238,92 @@ test('CollectorToolbox research tool toggles 256x144 5-venue spread bars on G2 a
   assert.equal(toolbox.getActiveTool(), 'gifti')
   assert.match(giftiSnap.title, /Gifti · Astral Shard/)
 })
+
+test('Gifti handles greetings, "hello what can you do", controls/standalone help, market pulse, and off-topic questions naturally without fake Topic chrome or 22-char truncation', async () => {
+  resetGiftiSessionForTests()
+  const catalog = getBundledCatalog()
+
+  // 1. "hello what can you do" returns capabilities intro, hides irrelevant chart, and does NOT burn a free turn!
+  const capReply = await askGiftiAiQuestion('hello what can you do', 'Plush Pepe', catalog)
+  assert.equal(capReply.title, 'Gifti · G2 Market Copilot')
+  assert.equal(capReply.showChart, false)
+  assert.match(capReply.answer, /I'm Gifti, your Telegram Collectible Gifts copilot on Even G2/)
+  assert.doesNotMatch(capReply.answer, /Plush Pepe trades at/)
+  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 20, 'Capability/greeting queries must not burn free demo turns')
+
+  // 2. Pure greeting ("Hi!") and thanks ("thank you") also preserve quota and omit random floor dumps
+  const hiReply = await askGiftiAiQuestion('Hi!', 'Plush Pepe', catalog)
+  assert.equal(hiReply.title, 'Gifti · G2 Market Copilot')
+  assert.equal(hiReply.showChart, false)
+  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 20)
+
+  const thxReply = await askGiftiAiQuestion('thank you!', 'Plush Pepe', catalog)
+  assert.equal(thxReply.showChart, false)
+  assert.match(thxReply.answer, /Happy to help/)
+  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 20)
+
+  // 3. Controls & standalone question explains G2 temple/R1 Ring/offline WASM standalone operation without burning quota
+  const ctrlReply = await askGiftiAiQuestion('Can this work standalone with gestures and voice commands?', 'Plush Pepe', catalog)
+  assert.equal(ctrlReply.title, 'Gifti · G2 & R1 Controls')
+  assert.equal(ctrlReply.showChart, false)
+  assert.match(ctrlReply.answer, /standalone in Even App with zero backend/)
+  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 20)
+
+  // 4. Off-topic question ("what is the weather today") gives polite Gifti scope nudge instead of Plush Pepe floor
+  const offTopic = await askGiftiAiQuestion('what is the weather today?', 'Plush Pepe', catalog)
+  assert.equal(offTopic.title, 'Gifti · G2 Market Copilot')
+  assert.equal(offTopic.showChart, false)
+  assert.match(offTopic.answer, /tuned for Telegram Collectible Gifts/)
+  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 20)
+
+  // 5. Market-wide queries ("how is the market today / top movers" & "most expensive gift") compute real catalog leaders and DO consume a turn
+  const pulseReply = await askGiftiAiQuestion('How is the market today? Any top movers?', 'Plush Pepe', catalog)
+  assert.equal(pulseReply.title, 'Gifti · 24h Market Pulse')
+  assert.equal(pulseReply.showChart, true)
+  assert.match(pulseReply.answer, /top 24h gainers/)
+  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 19)
+
+  const blueChip = await askGiftiAiQuestion('What is the most expensive gift collection?', 'Astral Shard', catalog)
+  assert.equal(blueChip.title, 'Gifti · Blue-Chip Leaders')
+  assert.equal(blueChip.showChart, true)
+  assert.match(blueChip.answer, /Highest floors: 1\)/)
+  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 18)
+
+  // 6. Greeting + real gift question ("hello what is Plush Pepe floor?") still answers the gift question!
+  const greetPlusGift = await askGiftiAiQuestion('hello what is Plush Pepe floor?', 'Plush Pepe', catalog)
+  assert.equal(greetPlusGift.title, 'Gifti · Plush Pepe')
+  assert.equal(greetPlusGift.showChart, true)
+  assert.match(greetPlusGift.answer, /Plush Pepe trades at/)
+  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 17)
+
+  // 7. End-to-end CollectorToolbox + G2 toolView formatting for "hello what can you do"
+  const toolbox = createCollectorToolbox(
+    {
+      getCatalog: () => catalog,
+      getFavoriteNames: () => ['Plush Pepe'],
+      openChart: () => true,
+      openTelegramDigest: () => {},
+      askGiftiQuestion: (q, col, sig) => askGiftiAiQuestion(q, col, catalog, sig),
+    },
+    () => 'Plush Pepe',
+  )
+  await toolbox.submitGiftiPrompt('hello what can you do', 'phone')
+  const qaPage = toolbox.getSnapshot()
+  assert.equal(qaPage.title, 'Gifti · G2 Market Copilot', 'Must NOT append fake · 1/4 preset index')
+  assert.equal(qaPage.chart, undefined, 'Must NOT attach random Plush Pepe 7d chart to capability greeting')
+  assert.equal(qaPage.browse, undefined, 'Custom Q&A uses wrapped reading pages instead of 1-line compact browse truncation')
+  assert.match(qaPage.lines[0], /Asked: "hello what can you do"/)
+  assert.doesNotMatch(qaPage.lines.join('\n'), /Topic: Floor & 7d momentum/)
+
+  const g2View = toolView(qaPage, 0, undefined, true)
+  assert.match(g2View.content, /Gifti · G2 Market Copilot/)
+  assert.match(g2View.content, /Asked: "hello what can you do"/)
+  assert.doesNotMatch(g2View.content, /Topic: Floor/)
+
+  // Clicking "Browse 4 preset topics" returns cleanly to preset 1/4 browse mode
+  toolbox.act(qaPage, 'browse-topics')
+  const presetPage = toolbox.getSnapshot()
+  assert.match(presetPage.title, /1\/4/)
+  assert.ok(presetPage.browse)
+  assert.ok(presetPage.chart)
+})
