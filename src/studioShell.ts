@@ -28,6 +28,39 @@ export function shouldEnableJudgeStudio(hasSim: boolean): boolean {
   return window.innerWidth >= 920
 }
 
+export function shouldShowMobileStudioBanner(hasSim: boolean): boolean {
+  if (!hasSim || typeof window === 'undefined') return false
+  const params = new URLSearchParams(window.location.search)
+  if (params.get('raw') === '1' || params.get('studio') === '0' || params.get('studio') === '1') return false
+  return window.innerWidth < 920
+}
+
+export function mountMobileStudioBanner(): () => void {
+  if (typeof document === 'undefined') return () => {}
+  const existing = document.getElementById('tg-mobile-studio-banner')
+  if (existing) existing.remove()
+  const banner = document.createElement('div')
+  banner.id = 'tg-mobile-studio-banner'
+  banner.className = 'tg-mobile-studio-banner'
+  banner.setAttribute('role', 'region')
+  banner.setAttribute('aria-label', 'Even G2 Studio notice')
+  const studioUrl = new URL(window.location.href)
+  studioUrl.searchParams.set('studio', '1')
+  banner.innerHTML = `
+    <span class="tg-mobile-banner-text">Phone Companion view · Open on desktop (≥920px) for side-by-side Even G2 Lens Studio</span>
+    <div class="tg-mobile-banner-actions">
+      <a class="tg-mobile-banner-link" href="${studioUrl.toString()}">Open Studio</a>
+      <button type="button" class="tg-mobile-banner-close" aria-label="Dismiss">✕</button>
+    </div>
+  `
+  const closeBtn = banner.querySelector<HTMLButtonElement>('.tg-mobile-banner-close')
+  if (closeBtn) closeBtn.onclick = () => banner.remove()
+  document.body.prepend(banner)
+  return () => {
+    banner.remove()
+  }
+}
+
 /**
  * Wraps `#root` inside a side-by-side TeleGifts Phone Bezel + Even Realities G2
  * Optical Waveguide & Voice/AI Hardware Test Bench for public GitHub Pages visitors.
@@ -79,14 +112,14 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
     <div class="tg-studio-header">
       <div class="tg-studio-brand">
         <h1>TeleGifts G2 · Interactive Hardware &amp; Voice Studio</h1>
-        <p>Real TeleGifts Phone Companion paired live with Even Realities G2 (576×288 4-bit HUD), R1 Ring &amp; Offline WASM / Gifti AI Voice</p>
+        <p>TeleGifts Phone Companion paired with simulated Even Realities G2 (576×288 4-bit HUD), R1 Ring &amp; Offline WASM / Gifti Analyst</p>
       </div>
       <div class="tg-studio-pills">
-        <button type="button" class="tg-pill tg-pill-btn tg-pill--primary" id="btnAutoTour" title="Play a 35-second guided live showcase across Phone &amp; G2 HUD">▶ Auto-Tour</button>
-        <a class="tg-pill tg-pill-link" href="./telegifts-g2.ehpk" download="telegifts-g2.ehpk" title="Download Even Hub .ehpk package (SDK 0.0.16)">⬇ .ehpk</a>
+        <button type="button" class="tg-pill tg-pill-btn tg-pill--primary" id="btnAutoTour" title="Play a guided live showcase across Phone &amp; G2 HUD">▶ Auto-Tour</button>
+        <a class="tg-pill tg-pill-link" id="tgEhpkLink" href="./telegifts-g2.ehpk" download="telegifts-g2.ehpk" title="Download Even Hub .ehpk package (SDK 0.0.16)" style="display:none">⬇ .ehpk</a>
         <span class="tg-pill tg-pill--red" id="tgMicPill" style="display:none"><span class="tg-dot"></span>MIC LIVE (16 kHz)</span>
-        <span class="tg-pill tg-pill--amber" id="tgImuPill" style="display:none">IMU NOD/SHAKE: ON</span>
-        <span class="tg-pill tg-pill--green"><span class="tg-dot"></span><span id="tgHudStatus">G2 Ready · 92%</span></span>
+        <span class="tg-pill tg-pill--amber" id="tgImuPill" style="display:none">IMU NOD/SHAKE (EXP): ON</span>
+        <span class="tg-pill tg-pill--green"><span class="tg-dot"></span><span id="tgHudStatus">G2 Ready · SIM</span></span>
       </div>
     </div>
 
@@ -99,7 +132,7 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
           <button type="button" data-backdrop="daylight">City Walk</button>
         </div>
       </div>
-      <div class="tg-lens-viewport" id="tgLensViewport" data-scene="dark">
+      <div class="tg-lens-viewport" id="tgLensViewport" data-scene="dark" tabindex="0" aria-label="Even Realities G2 Optical Waveguide (focus for keyboard shortcuts)">
         <canvas id="tgStudioCanvas" width="576" height="288"></canvas>
       </div>
       <div class="tg-menu-bar" id="tgStudioMenuBar"></div>
@@ -108,7 +141,7 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
     <div class="tg-studio-card">
       <div class="tg-card-head">
         <span class="tg-card-title">G2 Temple Touch, R1 Ring &amp; IMU Head-Gesture Controls</span>
-        <span class="tg-pill">Keyboard: ↑/↓ Swipe · Enter Tap · Esc 2×Tap · Space Hold Ring</span>
+        <span class="tg-pill">Lens Keys: ↑/↓ Swipe · Enter Tap · Esc 2×Tap · Space Hold Ring</span>
       </div>
       <div class="tg-controls-grid">
         <button type="button" class="tg-btn" id="btnSwipeUp">▲ Swipe Up <span class="tg-kbd">↑</span></button>
@@ -116,20 +149,20 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
         <button type="button" class="tg-btn tg-btn--green" id="btnTap">● Tap / Confirm <span class="tg-kbd">Enter</span></button>
         <button type="button" class="tg-btn" id="btnDoubleTap">↺ 2×Tap / Back <span class="tg-kbd">Esc</span></button>
         <button type="button" class="tg-btn tg-btn--primary" id="btnRingHold">💍 Hold R1 Ring (PTT)</button>
-        <button type="button" class="tg-btn" id="btnImuNod">🙂 IMU Head Nod</button>
-        <button type="button" class="tg-btn" id="btnImuShake">↔️ IMU Head Shake</button>
+        <button type="button" class="tg-btn" id="btnImuNod" title="Experimental IMU triage (simulated in Studio)">🙂 IMU Nod (Exp.)</button>
+        <button type="button" class="tg-btn" id="btnImuShake" title="Experimental IMU triage (simulated in Studio)">↔️ IMU Shake (Exp.)</button>
         <button type="button" class="tg-btn tg-btn--primary" id="btnLiveAsk">⚡ + Live /ask Alert</button>
       </div>
     </div>
 
     <div class="tg-studio-card">
       <div class="tg-card-head">
-        <span class="tg-card-title">Live Microphone Voice Input &amp; Gifti AI Copilot</span>
-        <span class="tg-pill tg-pill--green" id="tgGiftiQuotaPill">Gifti Demo: 20/20 free</span>
+        <span class="tg-card-title">Live Microphone Voice Input &amp; Gifti Market Analyst</span>
+        <span class="tg-pill tg-pill--green" id="tgGiftiQuotaPill">Offline Analyst (Rule-Based)</span>
       </div>
       <div class="tg-voice-row">
         <button type="button" class="tg-btn tg-btn--green" id="btnSpeakCmd">🎤 Speak G2 Command (Real Mic)</button>
-        <button type="button" class="tg-btn tg-btn--primary" id="btnSpeakGifti">🤖 Speak to Gifti AI</button>
+        <button type="button" class="tg-btn tg-btn--primary" id="btnSpeakGifti">🤖 Ask Gifti (Voice)</button>
         <button type="button" class="tg-btn" id="btnIrlListen">🗣️ 12s IRL Counterparty Mic</button>
         <div class="tg-vu-meter" title="Live 16 kHz microphone input level"><div class="tg-vu-fill" id="tgVuFill"></div></div>
       </div>
@@ -150,7 +183,7 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
       </div>
 
       <details class="tg-token-details">
-        <summary>🔑 Optional: Paste 1-Time AI Token (OpenAI / Gemini / Groq — RAM-only, never saved anywhere)</summary>
+        <summary>🔑 Optional: Paste 1-Time LLM Token (OpenAI / Gemini / Groq — RAM-only, never saved)</summary>
         <div class="tg-ai-form" style="margin-top:7px">
           <input type="password" autocomplete="off" spellcheck="false" class="tg-input" id="tgEphemeralKeyInput" placeholder="sk-... / AIza... / gsk_... (kept strictly in JS memory, cleared on reload)" />
           <button type="button" class="tg-btn tg-btn--green" id="btnApplyKey">Use for Session</button>
@@ -158,7 +191,7 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
         </div>
       </details>
 
-      <div class="tg-status-line" id="tgStudioStatus" role="status">Ready — click 🎤 Speak G2 Command to use your real microphone (offline WASM) or 🤖 Speak to Gifti AI.</div>
+      <div class="tg-status-line" id="tgStudioStatus" role="status">Ready — click 🎤 Speak G2 Command (offline WASM) or ask the rule-based Gifti analyst (paste a key for live LLM).</div>
     </div>
   `
 
@@ -173,6 +206,20 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
   const statusLine = document.getElementById('tgStudioStatus')!
   const viewport = document.getElementById('tgLensViewport')!
   const btnSpeakCmd = document.getElementById('btnSpeakCmd') as HTMLButtonElement
+  const ehpkLink = document.getElementById('tgEhpkLink') as HTMLAnchorElement | null
+  let disposed = false
+
+  // Only show the .ehpk download pill when the packaged artifact is actually hosted (e.g. GitHub Pages)
+  if (ehpkLink && typeof fetch === 'function') {
+    void fetch('./telegifts-g2.ehpk', { method: 'HEAD' })
+      .then(res => {
+        if (!disposed && res.ok) {
+          const ct = (res.headers.get('content-type') ?? '').toLowerCase()
+          if (!ct.includes('text/html')) ehpkLink.style.display = 'inline-flex'
+        }
+      })
+      .catch(() => {})
+  }
 
   let cachedUrl: string | null = null
   let cachedHash = 0
@@ -336,7 +383,8 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
 
     if (mirror) {
       const src = mirror.telemetry.lastInputSource ? ` · ${mirror.telemetry.lastInputSource.toUpperCase()}` : ''
-      hudStatus.textContent = `${mirror.navigation}${src} · ${mirror.telemetry.batteryLevel ?? 92}%`
+      const powerLabel = mirror.telemetry.batteryLevel === null ? 'SIM' : `${mirror.telemetry.batteryLevel}%`
+      hudStatus.textContent = `${mirror.navigation}${src} · ${powerLabel}`
     }
     paintHud()
   }
@@ -344,9 +392,9 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
   const syncGiftiUi = () => {
     const snap = getGiftiSessionSnapshot()
     if (snap.hasEphemeralKey && snap.provider) {
-      quotaPill.textContent = `1-Time ${snap.provider.toUpperCase()} Key (RAM Only)`
+      quotaPill.textContent = `Live LLM: ${snap.provider.toUpperCase()} (RAM Only)`
     } else {
-      quotaPill.textContent = `Gifti Demo: ${snap.freeTurnsRemaining}/${snap.freeTurnsTotal} free`
+      quotaPill.textContent = 'Offline Analyst (Rule-Based)'
     }
     if (snap.error) {
       statusLine.textContent = snap.error
@@ -421,6 +469,8 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
   }
   ringBtn.addEventListener('pointerdown', startRing)
   window.addEventListener('pointerup', endRing)
+  window.addEventListener('pointercancel', endRing)
+  window.addEventListener('blur', endRing)
 
   // Voice & Gifti controls
   btnSpeakCmd.onclick = () => {
@@ -438,7 +488,7 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
 
   document.getElementById('btnSpeakGifti')!.onclick = () => {
     bindings.sim.setSpeakerRole('wearer')
-    statusLine.textContent = 'Listening for your Gifti AI question on microphone… Speak naturally, then pause.'
+    statusLine.textContent = 'Listening for your Gifti question on microphone… Speak naturally, then pause.'
     bindings.startGiftiVoice()
   }
 
@@ -473,7 +523,7 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
         statusLine.textContent = `Voice command → "${voiceCmd}"`
         bindings.runVoicePhrase(voiceCmd)
       } else if (giftiPrompt) {
-        statusLine.textContent = `Gifti AI → "${giftiPrompt}"`
+        statusLine.textContent = `Gifti Analyst → "${giftiPrompt}"`
         void bindings.askGiftiText(giftiPrompt)
       }
     }
@@ -483,15 +533,20 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
   document.getElementById('btnApplyKey')!.onclick = () => {
     const val = keyInput.value.trim()
     if (!val) return
-    setEphemeralAiToken(val)
+    const ok = setEphemeralAiToken(val)
+    if (!ok) {
+      const snap = getGiftiSessionSnapshot()
+      statusLine.textContent = snap.error ?? 'Unrecognized key prefix — use sk-..., AIza..., or gsk_....'
+      return
+    }
     keyInput.value = ''
     const snap = getGiftiSessionSnapshot()
-    statusLine.textContent = `Applied 1-time ${snap.provider?.toUpperCase()} token in RAM only (never stored anywhere).`
+    statusLine.textContent = `Applied 1-time ${snap.provider?.toUpperCase()} LLM token in RAM only (never stored anywhere).`
   }
   document.getElementById('btnClearKey')!.onclick = () => {
     clearEphemeralAiToken()
     keyInput.value = ''
-    statusLine.textContent = 'Cleared in-memory AI token — back to 20 free demo messages.'
+    statusLine.textContent = 'Cleared in-memory LLM token — back to offline rule-based Gifti analyst.'
   }
 
   // Guided 5-stage live Auto-Tour (instantly cancellable by any user click or key)
@@ -559,8 +614,8 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
       bindings.runVoicePhrase('show venue spread for Plush Pepe')
       await waitStep(3_600, abort.signal)
 
-      // Stage 3: Gifti AI Cross-Venue Arbitrage
-      statusLine.textContent = 'Tour 3/5 · Gifti AI Copilot — Cross-Venue Net-of-Fee Arbitrage Scan…'
+      // Stage 3: Gifti Cross-Venue Arbitrage
+      statusLine.textContent = 'Tour 3/5 · Gifti Analyst — Cross-Venue Net-of-Fee Arbitrage Scan…'
       await bindings.askGiftiText('What is the best net arbitrage spread across venues right now?')
       await waitStep(3_800, abort.signal)
 
@@ -605,11 +660,20 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
   }
   window.addEventListener('pointerdown', onAnyManualPointerDown, true)
 
-  // Keyboard shortcuts (ignored when typing inside an input/textarea)
+  // Scope G2 keyboard shortcuts to body or the focused optical lens viewport so buttons,
+  // links, disclosures, inputs, and the embedded phone bezel keep native keyboard behavior.
+  const isLensShortcutTarget = (target: EventTarget | null): boolean => {
+    if (!target || target === document.body || target === document.documentElement) return true
+    if (!(target instanceof HTMLElement)) return false
+    if (target.closest('#tg-studio-bezel')) return false
+    if (target === viewport || viewport.contains(target)) return true
+    const interactive = target.closest('button, a, input, textarea, select, summary, [contenteditable="true"], [role="button"], [role="tab"]')
+    return !interactive && bench.contains(target)
+  }
+
   const onKeyDown = (ev: KeyboardEvent) => {
     if (tourAbort) stopAutoTour(true)
-    const tag = (ev.target as HTMLElement | null)?.tagName
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+    if (!isLensShortcutTarget(ev.target)) return
     if (ev.key === 'ArrowUp') {
       ev.preventDefault()
       bindings.sim.swipe(-1)
@@ -628,7 +692,7 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
     }
   }
   const onKeyUp = (ev: KeyboardEvent) => {
-    if (ev.code === 'Space') endRing()
+    if (ev.code === 'Space' && ringHeld) endRing()
   }
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('keyup', onKeyUp)
@@ -637,6 +701,7 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
   syncGiftiUi()
 
   return () => {
+    disposed = true
     stopAutoTour(false)
     clearInterval(pollTimer)
     clearTimeout(irlRoleTimer)
@@ -649,6 +714,8 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
     unsubVoice()
     window.removeEventListener('pointerdown', onAnyManualPointerDown, true)
     window.removeEventListener('pointerup', endRing)
+    window.removeEventListener('pointercancel', endRing)
+    window.removeEventListener('blur', endRing)
     window.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('keyup', onKeyUp)
     bench.innerHTML = ''

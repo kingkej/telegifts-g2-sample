@@ -46,6 +46,11 @@ export function isLikelyTonAddress(input: string): boolean {
   return false
 }
 
+export function isDemoPortfolioHandle(input: string): boolean {
+  const clean = input.trim().replace(/^@+/, '').toLowerCase()
+  return clean === 'collector' || clean === 'ton_alpha'
+}
+
 function numericProviderMap(floors: ProviderFloors | undefined | null, scale = 1): Record<string, number> {
   const out: Record<string, number> = {}
   if (!floors) return out
@@ -82,24 +87,30 @@ function buildPricedGiftItem(
     backdrop?: string
     symbol?: string
     customImageUrl?: string
+    allowSyntheticFallback?: boolean
   },
   catalog: CollectionFloorsResponse,
   nowIso: string,
 ): MaterializedPortfolioGift {
+  const synthetic = params.allowSyntheticFallback === true
   const models = getBundledModels(params.collection)
-  const chosenModel =
-    (params.model
-      ? models.find(m => resolveDeepLinkMatchKey(m.name) === resolveDeepLinkMatchKey(params.model!))
-      : undefined)
-    ?? models[params.serial % Math.max(1, models.length)]
-  const modelName = chosenModel?.name ?? params.model ?? 'Classic'
-  const backdropName = params.backdrop || BACKDROP_NAMES[params.serial % BACKDROP_NAMES.length]!
-  const symbolName = params.symbol || SYMBOL_NAMES[params.serial % SYMBOL_NAMES.length]!
-  const mult = BACKDROP_MULT[backdropName] ?? 1.02
+  const matchedModel = params.model
+    ? models.find(m => resolveDeepLinkMatchKey(m.name) === resolveDeepLinkMatchKey(params.model!))
+    : undefined
+  const chosenModel = matchedModel ?? (synthetic ? models[params.serial % Math.max(1, models.length)] : undefined)
+  const modelName = chosenModel?.name ?? (params.model?.trim() || (synthetic ? 'Classic' : 'Standard'))
+  const rawBackdrop = params.backdrop?.trim() || (synthetic ? BACKDROP_NAMES[params.serial % BACKDROP_NAMES.length]! : '')
+  const backdropName = synthetic && rawBackdrop ? `${rawBackdrop} (Demo)` : rawBackdrop
+  const symbolName = params.symbol?.trim() || (synthetic ? SYMBOL_NAMES[params.serial % SYMBOL_NAMES.length]! : '')
+  const mult = rawBackdrop ? (BACKDROP_MULT[rawBackdrop] ?? 1.0) : 1.0
 
   const colFloors = numericProviderMap(catalog.collection_floors[params.collection], 1)
   const modFloors = chosenModel ? numericProviderMap(chosenModel.floors, 1) : colFloors
-  const comboFloors = numericProviderMap(chosenModel?.floors ?? catalog.collection_floors[params.collection], mult)
+  const comboFloors = chosenModel
+    ? numericProviderMap(chosenModel.floors, mult)
+    : rawBackdrop
+      ? numericProviderMap(catalog.collection_floors[params.collection], mult)
+      : colFloors
   const cheapest = getCheapestVenueFloor(comboFloors as ProviderFloors)
     ?? getCheapestVenueFloor(modFloors as ProviderFloors)
     ?? getCheapestVenueFloor(colFloors as ProviderFloors)
@@ -179,7 +190,11 @@ function buildDeterministicCollectorGifts(
     const model = models[(seed + idx) % Math.max(1, models.length)]?.name
     const backdrop = BACKDROP_NAMES[(seed + idx) % BACKDROP_NAMES.length]
     const symbol = SYMBOL_NAMES[(seed + idx * 2) % SYMBOL_NAMES.length]
-    return buildPricedGiftItem({ collection: col, serial, model, backdrop, symbol }, catalog, nowIso)
+    return buildPricedGiftItem(
+      { collection: col, serial, model, backdrop, symbol, allowSyntheticFallback: true },
+      catalog,
+      nowIso,
+    )
   })
 }
 
@@ -194,11 +209,47 @@ interface TonApiNftItem {
   }
 }
 
+export async function resolveFragmentUsernameWallet(
+  username: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true; walletAddress: string | null } | { ok: false; status: number }> {
+  const clean = username
+    .trim()
+    .replace(/^@+/, '')
+    .replace(/\.t\.me$/i, '')
+    .toLowerCase()
+  if (!/^[a-z0-9_]{4,32}$/.test(clean)) {
+    return { ok: true, walletAddress: null }
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 3_500)
+  try {
+    const res = await fetchImpl(`https://tonapi.io/v2/dns/${encodeURIComponent(`${clean}.t.me`)}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    })
+    if (res.status === 404) return { ok: true, walletAddress: null }
+    if (!res.ok) return { ok: false, status: res.status }
+    const data = (await res.json()) as {
+      item?: { owner?: { address?: string } }
+      wallet?: { address?: string }
+      account?: { address?: string }
+    }
+    const addr = data.item?.owner?.address ?? data.wallet?.address ?? data.account?.address ?? null
+    return { ok: true, walletAddress: typeof addr === 'string' && addr.trim() ? addr.trim() : null }
+  } catch {
+    return { ok: false, status: 503 }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function fetchTonAddressGiftPortfolio(
   address: string,
   catalog: CollectionFloorsResponse,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ ok: boolean; gifts: MaterializedPortfolioGift[] }> {
+): Promise<{ ok: boolean; status?: number; gifts: MaterializedPortfolioGift[] }> {
   const clean = address.trim().replace(/^@+/, '')
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 3_500)
@@ -210,9 +261,9 @@ export async function fetchTonAddressGiftPortfolio(
       headers: { Accept: 'application/json' },
       signal: controller.signal,
     })
-    if (!res.ok) return { ok: false, gifts: [] }
+    if (!res.ok) return { ok: false, status: res.status, gifts: [] }
     const data = (await res.json()) as { nft_items?: TonApiNftItem[] }
-    if (!Array.isArray(data?.nft_items)) return { ok: false, gifts: [] }
+    if (!Array.isArray(data?.nft_items)) return { ok: false, status: 502, gifts: [] }
 
     const mapped: MaterializedPortfolioGift[] = []
     for (let i = 0; i < data.nft_items.length; i++) {
@@ -254,11 +305,15 @@ export async function fetchTonAddressGiftPortfolio(
 
     return { ok: true, gifts: mapped }
   } catch {
-    return { ok: false, gifts: [] }
+    return { ok: false, status: 503, gifts: [] }
   } finally {
     clearTimeout(timer)
   }
 }
+
+export type PortfolioLookupResult =
+  | { ok: true; payload: Record<string, unknown>; isDemo: boolean; source: 'tonapi' | 'demo' }
+  | { ok: false; status: number; error: string }
 
 export async function resolveUserPortfolioPayload(
   usernameOrAddress: string,
@@ -267,18 +322,61 @@ export async function resolveUserPortfolioPayload(
   mode: 'swift' | 'legacy',
   catalog: CollectionFloorsResponse,
   fetchImpl: typeof fetch = fetch,
-) {
+): Promise<PortfolioLookupResult> {
   const clean = usernameOrAddress.trim().replace(/^@+/, '')
   const offset = Math.max(0, Number.parseInt(offsetStr ?? '0', 10) || 0)
   const limit = Math.min(100, Math.max(1, Number.parseInt(limitStr ?? '50', 10) || 50))
   const nowIso = new Date().toISOString()
 
   let allGifts: MaterializedPortfolioGift[]
-  if (isLikelyTonAddress(clean)) {
-    const live = await fetchTonAddressGiftPortfolio(clean, catalog, fetchImpl)
-    allGifts = live.ok ? live.gifts : buildDeterministicCollectorGifts(clean, catalog, nowIso)
-  } else {
+  let isDemo = false
+  let source: 'tonapi' | 'demo' = 'tonapi'
+
+  if (isDemoPortfolioHandle(clean)) {
     allGifts = buildDeterministicCollectorGifts(clean, catalog, nowIso)
+    isDemo = true
+    source = 'demo'
+  } else if (isLikelyTonAddress(clean)) {
+    const live = await fetchTonAddressGiftPortfolio(clean, catalog, fetchImpl)
+    if (!live.ok) {
+      return {
+        ok: false,
+        status: live.status === 404 ? 404 : 503,
+        error:
+          live.status === 429
+            ? 'Public TonAPI rate limit reached. Retry shortly or enter @collector for the synthetic demo portfolio.'
+            : `Could not load live TON wallet "${clean}" from TonAPI. Retry shortly or enter @collector for the synthetic demo portfolio.`,
+      }
+    }
+    allGifts = live.gifts
+  } else {
+    const dns = await resolveFragmentUsernameWallet(clean, fetchImpl)
+    if (!dns.ok) {
+      return {
+        ok: false,
+        status: 503,
+        error:
+          dns.status === 429
+            ? 'Public TonAPI rate limit reached while resolving .t.me username. Retry shortly or enter @collector for the demo portfolio.'
+            : `Could not reach public TonAPI to resolve @${clean}.t.me. Retry shortly or enter @collector for the demo portfolio.`,
+      }
+    }
+    if (!dns.walletAddress) {
+      return {
+        ok: false,
+        status: 404,
+        error: `@${clean} has no public Fragment .t.me wallet on TON (off-chain Telegram profile lookups require VITE_MARKET_API_URL). Enter a TON address (EQ.../UQ.../.ton) or @collector for the synthetic demo portfolio.`,
+      }
+    }
+    const live = await fetchTonAddressGiftPortfolio(dns.walletAddress, catalog, fetchImpl)
+    if (!live.ok) {
+      return {
+        ok: false,
+        status: 503,
+        error: `Resolved @${clean}.t.me on TON, but TonAPI NFT lookup failed or rate-limited. Retry shortly.`,
+      }
+    }
+    allGifts = live.gifts
   }
 
   const pageGifts = allGifts.slice(offset, offset + limit)
@@ -298,56 +396,72 @@ export async function resolveUserPortfolioPayload(
 
   if (mode === 'swift') {
     return {
-      total: allGifts.length,
-      has_more: hasMore,
-      ...(nextOffset ? { next_offset: nextOffset } : {}),
-      gifts: pageGifts.map(g => ({
-        gift_id: g.giftId,
-        slug: g.slug,
-        telegram_url: g.telegramUrl,
-        collection: g.collection,
-        number: g.number,
-        model: g.model,
-        backdrop: g.backdrop,
-        symbol: g.symbol,
-        image_url: g.imageUrl,
-        updated_at: g.updatedAt,
-        floor_tier: Object.keys(g.comboFloors).length > 0 ? 'combo' : 'model',
-        floor_ton: g.floorTon,
-        floor_source: g.floorSource,
-        floor_sources: Object.keys(g.comboFloors).length > 0 ? g.comboFloors : g.modelFloors,
-      })),
+      ok: true,
+      isDemo,
+      source,
+      payload: {
+        total: allGifts.length,
+        has_more: hasMore,
+        is_demo: isDemo,
+        portfolio_source: source,
+        ...(isDemo ? { notice: 'Demo portfolio (synthetic holdings priced against bundled snapshot)' } : {}),
+        ...(nextOffset ? { next_offset: nextOffset } : {}),
+        gifts: pageGifts.map(g => ({
+          gift_id: g.giftId,
+          slug: g.slug,
+          telegram_url: g.telegramUrl,
+          collection: g.collection,
+          number: g.number,
+          model: g.model,
+          backdrop: g.backdrop,
+          symbol: g.symbol,
+          image_url: g.imageUrl,
+          updated_at: g.updatedAt,
+          floor_tier: Object.keys(g.comboFloors).length > 0 ? 'combo' : 'model',
+          floor_ton: g.floorTon,
+          floor_source: isDemo ? `${g.floorSource} (demo)` : g.floorSource,
+          floor_sources: Object.keys(g.comboFloors).length > 0 ? g.comboFloors : g.modelFloors,
+        })),
+      },
     }
   }
 
   return {
-    total: allGifts.length,
-    gifts_count: allGifts.length,
-    total_collection_price: totalCollectionPrice,
-    total_model_price: totalModelPrice,
-    gifts: pageGifts.map((g, idx) => ({
-      name: `${g.collection} #${g.number}`,
-      collection_name: g.collection,
-      model_name: g.model,
-      backdrop_name: g.backdrop,
-      collection_prices: g.collectionFloors,
-      model_prices: g.modelFloors,
-      combination_prices: g.comboFloors,
-      data: {
-        id: offset + idx + 1,
-        telegram_gift_name: g.slug,
-        telegram_nft_url: g.telegramUrl,
-        telegram_gift_title: g.collection,
-        telegram_gift_number: g.number,
-        media_preview: g.imageUrl,
-        last_updated_at: g.updatedAt,
-        attributes: {
-          model: { name: g.model },
-          backdrop: { name: g.backdrop },
-          symbol: { name: g.symbol },
+    ok: true,
+    isDemo,
+    source,
+    payload: {
+      total: allGifts.length,
+      gifts_count: allGifts.length,
+      is_demo: isDemo,
+      portfolio_source: source,
+      ...(isDemo ? { notice: 'Demo portfolio (synthetic holdings priced against bundled snapshot)' } : {}),
+      total_collection_price: totalCollectionPrice,
+      total_model_price: totalModelPrice,
+      gifts: pageGifts.map((g, idx) => ({
+        name: `${g.collection} #${g.number}`,
+        collection_name: g.collection,
+        model_name: g.model,
+        backdrop_name: g.backdrop,
+        collection_prices: g.collectionFloors,
+        model_prices: g.modelFloors,
+        combination_prices: g.comboFloors,
+        data: {
+          id: offset + idx + 1,
+          telegram_gift_name: g.slug,
+          telegram_nft_url: g.telegramUrl,
+          telegram_gift_title: g.collection,
+          telegram_gift_number: g.number,
+          media_preview: g.imageUrl,
+          last_updated_at: g.updatedAt,
+          attributes: {
+            model: { name: g.model },
+            backdrop: { name: g.backdrop },
+            symbol: { name: g.symbol },
+          },
         },
-      },
-    })),
+      })),
+    },
   }
 }
 
@@ -365,7 +479,8 @@ export function resolveFloorTriplesPayload(
     if (!colName) continue
     const models = getBundledModels(colName)
     const matchedModel = models.find(m => resolveDeepLinkMatchKey(m.name) === resolveDeepLinkMatchKey(t.model))
-    const mult = BACKDROP_MULT[t.backdrop.trim()] ?? 1.03
+    const cleanBackdrop = t.backdrop.trim().replace(/\s*\(demo\)$/i, '')
+    const mult = BACKDROP_MULT[cleanBackdrop] ?? 1.03
     const prices = numericProviderMap(matchedModel?.floors ?? catalog.collection_floors[colName], mult)
     if (Object.keys(prices).length > 0) {
       out[key] = prices

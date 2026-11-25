@@ -122,9 +122,9 @@ export function buildSmartReplyDrafts(
 
   drafts.push({
     id: 'quick-ack',
-    label: 'Checking listings',
+    label: 'Quick ack',
     collection: matched,
-    text: `Checking live ${matched} listings and model floors now — will post an update in this topic shortly.`,
+    text: `Saw your ${matched} question — checking current listings and model floors now.`,
   })
 
   return drafts

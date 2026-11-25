@@ -16,19 +16,19 @@ export type EphemeralAiProvider = 'openai' | 'gemini' | 'groq'
 export interface GiftiSessionSnapshot {
   hasEphemeralKey: boolean
   provider: EphemeralAiProvider | null
-  freeTurnsRemaining: number
-  freeTurnsTotal: number
   lastTranscript: string | null
   busy: boolean
   error: string | null
 }
 
-const FREE_DEMO_TURNS_TOTAL = 20
+function configuredModel(envKey: string, fallback: string): string {
+  const raw = (import.meta as { env?: Record<string, string> }).env?.[envKey]
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : fallback
+}
 
 // Strictly in-memory RAM variables — NEVER written to localStorage, sessionStorage, cookies, URL, or EvenAppBridge!
 let ephemeralApiKey = ''
 let ephemeralProvider: EphemeralAiProvider | null = null
-let freeTurnsRemaining = FREE_DEMO_TURNS_TOTAL
 let lastTranscript: string | null = null
 let inFlightCount = 0
 let lastError: string | null = null
@@ -37,8 +37,6 @@ const sessionListeners = new Set<() => void>()
 let cachedSessionSnapshot: GiftiSessionSnapshot = {
   hasEphemeralKey: false,
   provider: null,
-  freeTurnsRemaining: FREE_DEMO_TURNS_TOTAL,
-  freeTurnsTotal: FREE_DEMO_TURNS_TOTAL,
   lastTranscript: null,
   busy: false,
   error: null,
@@ -48,8 +46,6 @@ function rebuildCachedSnapshot() {
   cachedSessionSnapshot = {
     hasEphemeralKey: ephemeralApiKey.length > 0,
     provider: ephemeralProvider,
-    freeTurnsRemaining,
-    freeTurnsTotal: FREE_DEMO_TURNS_TOTAL,
     lastTranscript,
     busy: inFlightCount > 0,
     error: lastError,
@@ -61,30 +57,38 @@ function emitSession() {
   for (const listener of sessionListeners) listener()
 }
 
-export function detectAiProviderFromKey(rawKey: string): EphemeralAiProvider {
+export function detectAiProviderFromKey(rawKey: string): EphemeralAiProvider | null {
   const trimmed = rawKey.trim()
   if (/^AIza[0-9A-Za-z_-]{12,}$/.test(trimmed)) return 'gemini'
   if (/^gsk_[0-9A-Za-z_-]{12,}$/.test(trimmed)) return 'groq'
-  return 'openai'
+  if (/^sk-(?!ant-|or-)[0-9A-Za-z_-]{12,}$/.test(trimmed)) return 'openai'
+  return null
 }
 
 /**
  * Sets a one-time AI API key strictly in JS RAM closure for the current page session.
  * Never persisted anywhere on disk or storage.
  */
-export function setEphemeralAiToken(rawKey: string, explicitProvider?: EphemeralAiProvider): void {
+export function setEphemeralAiToken(rawKey: string, explicitProvider?: EphemeralAiProvider): boolean {
   const clean = rawKey.trim()
   if (!clean) {
     ephemeralApiKey = ''
     ephemeralProvider = null
     lastError = null
     emitSession()
-    return
+    return true
+  }
+  const resolved = explicitProvider ?? detectAiProviderFromKey(clean)
+  if (!resolved) {
+    lastError = 'Unrecognized key prefix — expected OpenAI (sk-...), Gemini (AIza...), or Groq (gsk_...).'
+    emitSession()
+    return false
   }
   ephemeralApiKey = clean
-  ephemeralProvider = explicitProvider ?? detectAiProviderFromKey(clean)
+  ephemeralProvider = resolved
   lastError = null
   emitSession()
+  return true
 }
 
 export function clearEphemeralAiToken(): void {
@@ -108,7 +112,6 @@ export function subscribeGiftiSession(listener: () => void): () => void {
 export function resetGiftiSessionForTests(): void {
   ephemeralApiKey = ''
   ephemeralProvider = null
-  freeTurnsRemaining = FREE_DEMO_TURNS_TOTAL
   lastTranscript = null
   inFlightCount = 0
   lastError = null
@@ -174,7 +177,12 @@ export async function transcribeWithEphemeralAiOrFallback(
             : 'https://api.openai.com/v1/audio/transcriptions'
         const form = new FormData()
         form.append('file', wav, 'speech.wav')
-        form.append('model', provider === 'groq' ? 'whisper-large-v3-turbo' : 'whisper-1')
+        form.append(
+          'model',
+          provider === 'groq'
+            ? configuredModel('VITE_GROQ_WHISPER_MODEL', 'whisper-large-v3-turbo')
+            : configuredModel('VITE_OPENAI_WHISPER_MODEL', 'whisper-1'),
+        )
         form.append('language', 'en')
         const res = await fetchImpl(endpoint, {
           method: 'POST',
@@ -192,8 +200,9 @@ export async function transcribeWithEphemeralAiOrFallback(
         }
       } else if (provider === 'gemini') {
         const b64 = await blobToBase64(wav)
+        const geminiModel = configuredModel('VITE_GEMINI_MODEL', 'gemini-2.5-flash')
         const res = await fetchImpl(
-          'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`,
           {
             method: 'POST',
             headers: {
@@ -339,14 +348,13 @@ export function buildFreeDemoGiftiReply(
   question: string,
   defaultCollection: string,
   catalog: CollectionFloorsResponse | null,
-  options?: { consumeFreeTurn?: boolean; includeQuotaTag?: boolean },
+  options?: { includeModeTag?: boolean },
 ): GiftiAnswerResult {
   const names = Object.keys(catalog?.collection_floors ?? {})
   const qNorm = resolveDeepLinkMatchKey(question)
   const lower = question.toLowerCase()
   const usdt = getLatestTonUsdtSnapshot().usd || DEFAULT_USDT_PER_GRAM
-  const consumeTurn = options?.consumeFreeTurn !== false
-  const includeQuotaTag = options?.includeQuotaTag !== false
+  const includeModeTag = options?.includeModeTag !== false
 
   const mentioned = names.filter(n => {
     const k = resolveDeepLinkMatchKey(n)
@@ -355,20 +363,19 @@ export function buildFreeDemoGiftiReply(
   const primary = mentioned[0] ?? (names.includes(defaultCollection) ? defaultCollection : names[0] ?? 'Plush Pepe')
   const metaIntent = classifyNonMarketGiftiIntent(question, mentioned.length > 0)
 
-  // Always answer greetings, capability help, thanks, and G2 control questions naturally without consuming a free turn!
   if (metaIntent === 'capability') {
     return {
-      title: 'Gifti · G2 Market Copilot',
+      title: 'Gifti · Offline Analyst',
       collection: primary,
       showChart: false,
       answer:
-        "Hi! I'm Gifti, your Telegram Collectible Gifts copilot on Even G2. Ask me: 1) best 5-venue arbitrage right now, 2) top 24h movers or market pulse, 3) compare gifts (Plush Pepe vs Astral Shard), or 4) rare ‰ tiers, whale risk & budget picks.",
+        "Hi! I'm Gifti, your rule-based offline Telegram Gifts analyst on Even G2 (paste an optional OpenAI/Gemini/Groq key for live LLM). Ask me: 1) best 5-venue arbitrage, 2) top 24h movers or market pulse, 3) compare two gifts, or 4) rare ‰ tiers, whale risk & budget picks.",
     }
   }
 
   if (metaIntent === 'thanks') {
     return {
-      title: 'Gifti · G2 Market Copilot',
+      title: 'Gifti · Offline Analyst',
       collection: primary,
       showChart: false,
       answer:
@@ -382,23 +389,13 @@ export function buildFreeDemoGiftiReply(
       collection: primary,
       showChart: false,
       answer:
-        'Swipe G2 temple or R1 Ring to browse, Tap to inspect, 2×Tap to go back, Hold Ring to speak (offline WASM), and Head-Nod/Shake on live /ask alerts. All 24 gift collections & speech run standalone in Even App with zero backend.',
-    }
-  }
-
-  if (consumeTurn && freeTurnsRemaining <= 0) {
-    return {
-      title: 'Gifti · Demo Limit',
-      collection: primary,
-      showChart: false,
-      answer:
-        '20/20 free demo messages used in this session. Paste a 1-time OpenAI, Gemini, or Groq key (RAM-only, never saved) for unlimited live AI turns.',
+        'Swipe G2 temple or R1 Ring to browse, Tap to inspect, 2×Tap to go back, Hold Ring to speak (offline WASM), and Head-Nod/Shake on live /ask alerts (experimental). All 24 snapshot collections & speech run locally with zero backend.',
     }
   }
 
   if (metaIntent === 'off-topic') {
     return {
-      title: 'Gifti · G2 Market Copilot',
+      title: 'Gifti · Offline Analyst',
       collection: primary,
       showChart: false,
       answer:
@@ -406,12 +403,7 @@ export function buildFreeDemoGiftiReply(
     }
   }
 
-  if (consumeTurn) {
-    freeTurnsRemaining = Math.max(0, freeTurnsRemaining - 1)
-  }
-  const tag = includeQuotaTag
-    ? (consumeTurn ? ` [${freeTurnsRemaining}/${FREE_DEMO_TURNS_TOTAL} free]` : ' [local fallback]')
-    : ''
+  const tag = includeModeTag ? ' [rule-based]' : ''
 
   // 1. Two-collection comparison
   if (mentioned.length >= 2) {
@@ -625,8 +617,6 @@ export async function askGiftiAiQuestion(
     explicitMention ?? (names.includes(defaultCollection) ? defaultCollection : names[0] ?? 'Plush Pepe')
   const metaIntent = classifyNonMarketGiftiIntent(cleanQuestion, Boolean(explicitMention))
 
-  const hadEphemeralKey = Boolean(ephemeralApiKey && ephemeralProvider)
-
   try {
     if (ephemeralApiKey && ephemeralProvider) {
       const activeKey = ephemeralApiKey
@@ -645,7 +635,10 @@ export async function askGiftiAiQuestion(
           activeProvider === 'groq'
             ? 'https://api.groq.com/openai/v1/chat/completions'
             : 'https://api.openai.com/v1/chat/completions'
-        const model = activeProvider === 'groq' ? 'llama-3.3-70b-versatile' : 'gpt-4o-mini'
+        const model =
+          activeProvider === 'groq'
+            ? configuredModel('VITE_GROQ_MODEL', 'llama-3.3-70b-versatile')
+            : configuredModel('VITE_OPENAI_MODEL', 'gpt-4o-mini')
         const res = await fetchImpl(endpoint, {
           method: 'POST',
           headers: {
@@ -674,8 +667,9 @@ export async function askGiftiAiQuestion(
           answer: reply,
         }
       } else if (activeProvider === 'gemini') {
+        const geminiModel = configuredModel('VITE_GEMINI_MODEL', 'gemini-2.5-flash')
         const res = await fetchImpl(
-          'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`,
           {
             method: 'POST',
             headers: {
@@ -709,13 +703,11 @@ export async function askGiftiAiQuestion(
       }
     }
 
-    return buildFreeDemoGiftiReply(cleanQuestion, matchedCollection, catalog, { consumeFreeTurn: true })
+    return buildFreeDemoGiftiReply(cleanQuestion, matchedCollection, catalog)
   } catch (err) {
     if (signal?.aborted) throw err
-    lastError = err instanceof Error ? `${err.message} (using built-in Gifti analyst)` : 'AI request failed'
-    return buildFreeDemoGiftiReply(cleanQuestion, matchedCollection, catalog, {
-      consumeFreeTurn: !hadEphemeralKey,
-    })
+    lastError = err instanceof Error ? `${err.message} (using offline rule-based Gifti analyst)` : 'AI request failed'
+    return buildFreeDemoGiftiReply(cleanQuestion, matchedCollection, catalog)
   } finally {
     inFlightCount = Math.max(0, inFlightCount - 1)
     emitSession()

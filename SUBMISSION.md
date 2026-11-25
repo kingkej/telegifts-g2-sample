@@ -4,25 +4,22 @@
 - **Primary Track:** `Track 01 — Messaging & News` (`Telegram`: accounts, bots, channels, Mini Apps)
 - **Bonus / Cross-Track Category:** `Best Telegram Integration`
 - **Target Hardware & SDK:** Even Realities G2 (`576 × 288`, 4-bit optical waveguide) + Even R1 Ring · `@evenrealities/even_hub_sdk@0.0.16`
+- **Live Interactive Studio:** https://kingkej.github.io/telegifts-g2-sample/
+- **Demo Clip:** [demo/telegram-chart-reply.mp4](./demo/telegram-chart-reply.mp4)
 
 ---
 
 ## 1. One-Line Pitch
-**TeleGifts G2** turns Even Realities G2 glasses and the R1 Ring into a heads-up Telegram Gift collectibles terminal and real-time moderator copilot — combining 4-bit optical floor & 5-venue spread charts, instant SSE `/ask` interrupts, IMU head-nod alert triage, and 1-tap visual Telegram replies.
+**TeleGifts G2** turns Even Realities G2 glasses and the R1 Ring into a heads-up Telegram Gift collectibles terminal and moderator copilot — combining 4-bit optical floor & 5-venue spread charts, live SSE `/ask` interrupts, and 1-tap visual Telegram replies.
 
 ---
 
-## 2. Inspiration & Why Smart Glasses?
-Telegram Collectible Gifts trade 24/7 across five fragmented TON marketplaces (**Portals, Tonnel, MRKT, Getgems, and Fragment**), while collector alpha and price discovery happen inside fast-moving Telegram forum topics (`#floor-watch`, `#deals-radar`, `#model-checks`) and breakout channels.
+## 2. Problem & Why Smart Glasses
+Telegram Collectible Gifts trade 24/7 across five TON marketplaces (**Portals, Tonnel, MRKT, Getgems, and Fragment**), while collector price discovery happens inside fast-moving Telegram supergroups and forum topics. Constantly pulling out a phone to compare floors across five venues or answer repetitive `/ask` questions breaks focus.
 
-Collectors and community moderators face constant phone pullout fatigue:
-1. Checking whether a gift floor or net-of-fee arbitrage spread moved across five venues.
-2. Answering repetitive `/ask` floor and spread questions in Telegram supergroups.
-3. Looking up gift floors mid-conversation at IRL TON/Telegram meetups.
-
-**Even Realities G2** solves this natively in the wearer's line of sight:
-- **Glanceable 4-bit Optical Visuals:** `256 × 144` 16-shade UTC floor plots, 5-venue horizontal spread bar charts, and tilted 3D gift relief projections sit cleanly beside a brightness-graded (`textColor` `2 / 4 / 3`) 3-region waveguide HUD.
-- **Hands-Free Action:** Hold the **R1 Ring** to voice-pick a Telegram reply draft via offline WASM speech recognition (`soundswallower`), **nod** to open a `LIVE /ASK` smart reply via G2 IMU (`imuControl`), or launch directly from the **G2 OS Menu (`glassesMenu`)** into a 60-second Morning Market Brief.
+**Even Realities G2** solves this with a tight **Read + Write** micro-interaction loop:
+- **Read at a glance:** Brightness-graded (`textColor` `2 / 4 / 3`) 3-region waveguide HUD paired with `256 × 144` 16-shade UTC floor plots, 5-venue horizontal spread bar charts, and tilted 3D gift relief previews.
+- **Write in seconds:** When `/ask` arrives over SSE, a non-destructive `LIVE /ASK` alert surfaces on the G2 lens — tap (or hold the **R1 Ring** to voice-pick a draft via offline WASM speech recognition) to post a grounded threaded reply with an attached 7d or 5-venue spread PNG.
 
 ---
 
@@ -32,8 +29,8 @@ Collectors and community moderators face constant phone pullout fatigue:
 flowchart LR
   subgraph Glasses["Even Realities G2 + R1 Ring (SDK 0.0.16)"]
     HUD["576×288 4-Bit Spatial HUD\n(3 Text Regions + 256×144 PNG Plane)"]
-    MIC["G2 Mic + Speaker Role\n(self PTT / other IRL Lookup)"]
-    IMU["G2 IMU (imuControl)\nNod: Reply · Shake: Dismiss"]
+    MIC["G2 Mic + Speaker Role\n(Wearer PTT / 12s IRL Lookup)"]
+    IMU["G2 IMU (Experimental)\nNod: Reply · Shake: Dismiss"]
     RING["R1 Ring & Temple Touch\nSwipe · Tap · Hold · 2×Tap"]
   end
 
@@ -41,11 +38,11 @@ flowchart LR
     UI["@telegifts/phone UI\nExplore · Insights · Heatmap · Sheets"]
     COPILOT["9-Tool Collector Copilot\nBrief · Gifti · Watchlist · Research · Note"]
     ASR["Offline SoundSwallower WASM\nFinite-State JSGF Grammar"]
-    TICKER["Live CoinGecko TON/USDT\n+ Deterministic Offline Fallback"]
+    PUBLIC["Public APIs: CoinGecko TON/USDT\n& TonAPI Wallet / .t.me NFTs"]
   end
 
   subgraph Relay["Self-Hosted Telegram Bot Relay (server/telegramRelay.mjs)"]
-    SSE["GET /g2/telegram/events\nSub-Second Authenticated SSE"]
+    SSE["GET /g2/telegram/events\nAuthenticated SSE + Immediate Long-Poll"]
     BOT["Telegram Bot API\n/ask · sendPhoto · Inline Callbacks"]
   end
 
@@ -53,29 +50,31 @@ flowchart LR
   MIC --> ASR --> Companion
   IMU --> Companion
   Companion --> HUD
-  TICKER --> Companion
+  PUBLIC --> Companion
   Companion <-->|"Bearer Auth + Idempotent Receipts"| Relay
   SSE -->|"LIVE /ASK Interrupt"| Companion
-  BOT <-->|"Forum Topics, Channels & DMs"| TG["Telegram Supergroups & Saved Messages"]
+  BOT <-->|"Paired Group, Allowlisted Channels & DM"| TG["Telegram Supergroups & Saved Messages"]
 ```
 
 ---
 
 ## 4. Even G2 SDK `0.0.16` Hardware Capabilities Used
 
-| Even Hub SDK Primitive | How TeleGifts G2 Uses It |
-| --- | --- |
-| `createStartUpPageContainer` / `rebuildPageContainer` / `textContainerUpgrade` | 3-region spatial HUD with brightness hierarchy (`header: 2`, `body: 4` w/ single `isEventCapture: 1`, `footer: 3`) and fenced container IDs |
-| `updateImageRawData` (`120 × 120` & `256 × 144`) | Streams 16-level grayscale gift artwork, tilted 3D relief models, `24h/7d/30d` UTC floor charts, and 5-venue horizontal spread bar charts |
-| `EventSourceType` (`RING`, `GLASSES_R`, `GLASSES_L`) + `LONG_PRESS` | R1 Ring push-to-talk draft selection in Smart Reply composer + live input-source badge on HUD mirror |
-| `audioControl` + `AudioSpeakerRole` (`self` vs `other`) | Offline JSGF voice commands & `Ask Gifti` for wearer (`self`), plus bounded 12s **IRL Meetup Overheard Lookup** (`other`) that beams mentioned gift spreads without interfering with wearer speech |
-| `imuControl` + `IMU_DATA_REPORT` (`x, y, z`) | Power-gated **Head-Nod / Head-Shake Alert Triage** active strictly during transient `LIVE /ASK` and Watch-Hit (`digest-watch-*`) overlays |
-| `onLaunchSource` (`glassesMenu` vs `appMenu`) | Early-captured G2 OS menu launch opens straight into the **60s Morning Market Brief (`summary`)** |
-| `getLocalStorage` / `setLocalStorage` + `pickImageFromAlbum` | Hydrates & writes through Favorites, Watchlist baselines, Relay config, and G2 hardware preferences into Even App native storage, plus album gift-image scanning |
+| Even Hub SDK Primitive | How TeleGifts G2 Uses It | Verification Status |
+| --- | --- | --- |
+| `createStartUpPageContainer` / `rebuildPageContainer` / `textContainerUpgrade` | 3-region spatial HUD (`header: 2` capped at 72B, `body: 4` with unique `isEventCapture: 1`, `footer: 3`) validated via `validateEvenHubPageContainer` | Browser Studio, Even Hub Simulator & unit tests |
+| `updateImageRawData` (`120 × 120` & `256 × 144`) | Streams 16-level grayscale gift artwork, tilted 3D relief models, `24h/7d/30d` UTC floor charts, and 5-venue spread bar charts | Browser Studio, Even Hub Simulator & unit tests |
+| `EventSourceType` (`RING`, `GLASSES_R`, `GLASSES_L`) + `LONG_PRESS` | R1 Ring push-to-talk draft selection in Smart Reply composer + live input-source badge | Browser Studio, Even Hub Simulator & unit tests |
+| `audioControl` + `AudioSpeakerRole` (`self` vs `other`) | Offline JSGF voice commands & Ask Gifti for wearer (accepting all glasses PCM during active wearer sessions), plus bounded 12s IRL overheard lookup when idle | Browser Studio & unit tests (not yet tested on physical G2) |
+| `imuControl` + `IMU_DATA_REPORT` (`x, y, z`) | **Experimental** power-gated Head-Nod / Head-Shake alert triage enabled strictly during transient `LIVE /ASK` and watch-hit overlays | Browser Studio & unit tests (needs physical G2 calibration) |
+| `onLaunchSource` (`glassesMenu` vs `appMenu`) | Early-captured G2 OS menu launch opens straight into the **60s Morning Market Brief (`summary`)** | Browser Studio & unit tests |
+| `getLocalStorage` / `setLocalStorage` + `pickImageFromAlbum()` | Hydrates & writes through Favorites, Watchlist baselines, Relay config, and hardware preferences into Even host storage, plus album filename gift matching | Browser Studio & unit tests |
 
 ---
 
 ## 5. 60-Second Judge Evaluation Guide (Zero API Keys Required)
+
+Open **https://kingkej.github.io/telegifts-g2-sample/** on desktop, or run locally:
 
 ```bash
 npm install
@@ -83,19 +82,18 @@ npm test
 npm run dev
 ```
 
-1. **Interactive Browser & GitHub Pages Judge Studio (`http://localhost:3000`):**
-   - Opens a side-by-side **TeleGifts Phone Bezel + Even Realities G2 `576 × 288` 4-Bit Optical Waveguide** with ambient backdrop switching (`Dark Lab / TON Meetup / City Walk`), keyboard-mapped R1 Ring & Temple controls (`↑/↓/Enter/Esc/Space`), and **real `16 kHz` microphone voice input** (`🎤 Speak G2 Command` → offline `soundswallower` WASM, plus `🤖 Speak to Gifti AI` with **20 free demo messages** or an optional one-time RAM-only `OpenAI / Gemini / Groq` key that is never saved anywhere).
-   - Browse **Explore** (Grid & List sparklines), **Insights → Heatmap** (`12h / 24h / 7d / 30d`), or **Tools → User portfolio & Wallet Card** (enter `@collector` or any public TON wallet `EQ...` / `UQ...` / `.ton`).
-   - Tap **Copilot** in the `Explore` header to test all **9 Collector Copilot tools**: `60s Morning market brief`, `Ask Gifti copilot`, `Watchlist & USDT valuation`, `Net arbitrage & rarity research` (net of `2.5%–5%` venue seller fees + 5-venue spread bar toggle), `Draft Telegram alpha note`, `Spread radar`, and `Watch asking price`.
-   - Tap **Telegram Setup** (or `⚡ + Live /ask Alert` in the Studio) to test **`+ Live /ask Heads-Up`**, **IMU Head-Nod Triage**, paste a **`t.me/nft/PlushPepe-412`** link to beam its 5-venue spread to G2, or trigger **12s IRL Counterparty Mic**.
-2. **Official Even Hub Simulator (`576 × 288` Waveguide):**
-   - In a second terminal, run `npm run simulate` (`evenhub-simulator http://localhost:3000/?raw=1`).
-3. **Optional Live Telegram Bot Relay:**
-   - Copy `.env.example` to `.env`, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` (kept strictly server-side), run `npm run relay`, and connect in **Telegram Setup** for real `/ask` SSE interrupts, `venue-spread.png` / `floor-chart.png` `sendPhoto` replies, and inline `🔄 Ask Live Floor` / `📌 Pin to Digest` callback buttons.
+1. **Interactive G2 Studio (`http://localhost:3000`):**
+   - Click **▶ Auto-Tour**, or use the G2 controls (`↑/↓/Enter/Esc/Space` when the lens is focused) and **🎤 Speak G2 Command (Real Mic)** (`16 kHz` WebAudio → offline `soundswallower` WASM).
+   - Try the **Offline Gifti Analyst** (unlimited local rule-based queries, or paste an optional 1-time RAM-only `OpenAI / Gemini / Groq` key for live LLM & Whisper).
+   - Check **Tools → User portfolio** with `@collector` (explicit synthetic demo) or any real public TON address (`EQ...` / `UQ...` / `.ton`) or Fragment collectible `@username` (live read-only TonAPI).
+   - Click **⚡ + Live /ask Alert** to test the heads-up interrupt, experimental IMU nod/shake simulation, and 1-tap Smart Reply.
+2. **Official Even Hub Simulator (`576 × 288`):** Run `npm run simulate` in a second terminal (`evenhub-simulator http://localhost:3000/?raw=1`).
+3. **Optional Live Telegram Bot Relay:** Copy `.env.example` to `.env`, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` (plus optional `RELAY_ALLOWED_CHANNELS`), run `npm run relay`, and connect in **Explore → Telegram Setup**.
 
 ---
 
-## 6. Security, Live-Data Honesty & Public Repo Hygiene
-- **Zero Client-Side Secrets:** `TELEGRAM_BOT_TOKEN` lives exclusively in `server/telegramRelay.mjs`. Relay endpoints enforce DNS-rebinding Host checks, Fetch Metadata (`Sec-Fetch-Site`), CORS allowlists, and `timingSafeEqual` Bearer tokens.
-- **Strict Live vs. Snapshot Honesty:** When connected to a live Telegram relay without a live market/history feed, synthetic 7d curves and spread charts are never attached or presented as live quotes — outgoing cards explicitly carry `(snapshot)` markers.
-- **Automated Public Audit (`npm run audit:public`):** Scans all repository files (`>330` files including bundled assets and `app.json`) to guarantee zero leaked tokens, keystores, or private endpoints.
+## 6. Security, Live-Data Honesty & Provenance
+- **Zero Client-Side Secrets:** `TELEGRAM_BOT_TOKEN` stays exclusively in `server/telegramRelay.mjs`. Relay endpoints enforce DNS-rebinding Host checks, Fetch Metadata (`Sec-Fetch-Site`), CORS allowlists, `RELAY_ALLOWED_CHANNELS` gating on `channel_post`, bounded receipt/token maps, and `timingSafeEqual` Bearer auth.
+- **Strict Live vs. Snapshot Honesty:** In live Telegram relay mode without a live market feed, synthetic 7d curves are never attached as live facts and outgoing quotes carry explicit `(snapshot)` markers. Real TON wallet lookup failures return an honest error instead of fabricating holdings.
+- **Automated Public Audit (`npm run audit:public`):** Scans all workspace source and asset files (excluding `dist/` and `node_modules/`) for leaked secrets, keystores, sourcemaps, manifest compliance, and vendor license notices.
+- **Provenance & Licensing:** Git history was squashed into a clean public release on Nov 25, 2026 (baseline vs hackathon breakdown in [README.md](./README.md#6-hackathon-transparency-disclosure--licensing)). Original repo code is MIT-licensed; the pre-built companion UI in `vendor/telegifts-phone/` is proprietary per [vendor/telegifts-phone/NOTICE](./vendor/telegifts-phone/NOTICE).

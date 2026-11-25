@@ -1,0 +1,17 @@
+@telegifts/phone — Pre-Built Companion UI Bundle Notice
+======================================================
+
+The MIT License in the root LICENSE file applies to all original source code,
+scripts, tests, and documentation in this repository OUTSIDE of the
+`vendor/telegifts-phone/` directory.
+
+The pre-compiled, sourcemap-free runtime bundle located in
+`vendor/telegifts-phone/` (`index.js`, `style.css`, `index.d.ts`, `package.json`)
+is proprietary software copyright TeleGifts. Its TypeScript/React source files
+are kept private and are not open-sourced under MIT.
+
+Permission is granted solely to install, run, build, package (`.ehpk`), and
+evaluate this bundle as part of the TeleGifts G2 repository and its hosted
+GitHub Pages / Even Realities Hackathon submission. Redistribution of the
+`vendor/telegifts-phone/` bundle for unrelated commercial products or reverse
+engineering is not granted by the root MIT License.

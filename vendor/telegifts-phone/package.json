@@ -1,6 +1,7 @@
 {
   "name": "@telegifts/phone",
   "version": "0.2.0",
+  "license": "SEE LICENSE IN NOTICE",
   "type": "module",
   "main": "./index.js",
   "style": "./style.css",

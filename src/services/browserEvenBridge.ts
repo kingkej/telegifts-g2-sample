@@ -108,11 +108,18 @@ export function installBrowserSimulatorIfStandalone(): BrowserSimulatorControls 
   const eventListeners = new Set<(event: EvenHubEvent) => void>()
   const deviceListeners = new Set<(status: Record<string, unknown>) => void>()
   const launchListeners = new Set<(source: LaunchSource) => void>()
-  let deviceStatus = {
+  let deviceStatus: {
+    sn: string
+    connectType: string
+    isWearing: boolean
+    batteryLevel: number | null
+    isCharging: boolean
+    isInCase: boolean
+  } = {
     sn: 'ER-G2-SIM-01',
     connectType: 'connected',
     isWearing: true,
-    batteryLevel: 92,
+    batteryLevel: null,
     isCharging: false,
     isInCase: false,
   }

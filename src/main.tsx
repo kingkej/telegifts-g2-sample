@@ -29,7 +29,13 @@ import {
   registerHostIrlListenStarter,
   triggerHostLiveAsk,
 } from './services/phoneHostBridge.ts'
-import { bindJudgeStudioControls, prepareJudgeStudioDom, shouldEnableJudgeStudio } from './studioShell.ts'
+import {
+  bindJudgeStudioControls,
+  mountMobileStudioBanner,
+  prepareJudgeStudioDom,
+  shouldEnableJudgeStudio,
+  shouldShowMobileStudioBanner,
+} from './studioShell.ts'
 import { createVoiceControl } from './voiceControl.ts'
 
 // Capture one-shot `evenAppLaunchSource` before async page startup and mirror runtime Favorites writes
@@ -147,6 +153,7 @@ if (initialSimControls) {
 
 let studioDomDisposer: (() => void) | null = null
 let studioControlsDisposer: (() => void) | null = null
+let mobileBannerDisposer: (() => void) | null = null
 
 async function bootstrapCompanionUi() {
   if (hasHostEvenBridge()) {
@@ -162,6 +169,8 @@ async function bootstrapCompanionUi() {
   const studioActive = Boolean(initialSimControls && shouldEnableJudgeStudio(true))
   if (studioActive) {
     studioDomDisposer = prepareJudgeStudioDom(rootEl)
+  } else if (initialSimControls && shouldShowMobileStudioBanner(true)) {
+    mobileBannerDisposer = mountMobileStudioBanner()
   }
 
   mountTeleGifts(rootEl, appCompanion)
@@ -197,6 +206,8 @@ window.addEventListener(
     studioControlsDisposer = null
     studioDomDisposer?.()
     studioDomDisposer = null
+    mobileBannerDisposer?.()
+    mobileBannerDisposer = null
     if (initialSimControls) {
       const activeSim = initialSimControls
       initialSimControls = undefined

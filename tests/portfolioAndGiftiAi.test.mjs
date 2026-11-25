@@ -14,9 +14,14 @@ import {
   transcribeWithEphemeralAiOrFallback,
 } from '../src/services/giftiAiBridge.ts'
 import { hostHttpFetch, PUBLIC_API_ORIGIN } from '../src/services/phoneHostBridge.ts'
-import { fetchTonAddressGiftPortfolio, isLikelyTonAddress } from '../src/services/tonPortfolio.ts'
+import {
+  fetchTonAddressGiftPortfolio,
+  isDemoPortfolioHandle,
+  isLikelyTonAddress,
+  resolveUserPortfolioPayload,
+} from '../src/services/tonPortfolio.ts'
 
-test('Gift Sets routes return clean empty state while Gifti AI bridge enforces 20 free turns and strictly RAM-only ephemeral tokens', async () => {
+test('Gift Sets routes return clean empty state while Gifti bridge provides unlimited rule-based analyst and strict RAM-only LLM tokens', async () => {
   const setsRes = await hostHttpFetch(`${PUBLIC_API_ORIGIN}/api/v1/telegifts/gift-sets?limit=20&offset=0`)
   assert.equal(setsRes.status, 200)
   const emptySets = await setsRes.json()
@@ -25,11 +30,17 @@ test('Gift Sets routes return clean empty state while Gifti AI bridge enforces 2
   const detailRes = await hostHttpFetch(`${PUBLIC_API_ORIGIN}/api/v1/telegifts/gift-sets/detail?set_name=Any`)
   assert.equal(detailRes.status, 404)
 
-  // Verify provider auto-detection & RAM-only ephemeral key behavior (never touches storage)
+  // Verify provider auto-detection & strict prefix rejection (unknown keys never silently route to OpenAI)
   resetGiftiSessionForTests()
   assert.equal(detectAiProviderFromKey('sk-proj-1234567890abcdefghijklmnop'), 'openai')
   assert.equal(detectAiProviderFromKey('AIzaSyA1234567890abcdefghijklmnop'), 'gemini')
   assert.equal(detectAiProviderFromKey('gsk_1234567890abcdefghijklmnopqrstuv'), 'groq')
+  assert.equal(detectAiProviderFromKey('sk-ant-api03-1234567890abcdef'), null)
+  assert.equal(detectAiProviderFromKey('sk-or-v1-1234567890abcdef'), null)
+  assert.equal(detectAiProviderFromKey('not-a-valid-key-prefix'), null)
+  assert.equal(setEphemeralAiToken('not-a-valid-key-prefix'), false)
+  assert.equal(getGiftiSessionSnapshot().hasEphemeralKey, false)
+  assert.match(getGiftiSessionSnapshot().error ?? '', /Unrecognized key prefix/)
 
   // Valid 44-byte RIFF/WAVE header on 16kHz PCM
   const samplePcm = new Uint8Array([0x00, 0x01, 0xff, 0x7f, 0x10, 0x00, 0x20, 0x00])
@@ -40,30 +51,24 @@ test('Gift Sets routes return clean empty state while Gifti AI bridge enforces 2
   assert.equal(String.fromCharCode(...wavBytes.subarray(8, 12)), 'WAVE')
 
   const catalog = getBundledCatalog()
-  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 20)
 
-  // Free turn #1: best net arbitrage scan
+  // Rule-based offline analyst has no artificial quota and tags responses clearly
   const arbReply = await askGiftiAiQuestion('What is the best net arbitrage spread right now?', 'Plush Pepe', catalog)
   assert.match(arbReply.title, /Best Arbitrage/)
-  assert.match(arbReply.answer, /\[19\/20 free\]/)
-  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 19)
+  assert.match(arbReply.answer, /\[rule-based\]/)
 
-  // Free turn #2: two-gift comparison
   const cmpReply = await askGiftiAiQuestion('Compare Plush Pepe and Astral Shard', 'Plush Pepe', catalog)
   assert.match(cmpReply.title, /Plush Pepe vs Astral Shard/)
-  assert.match(cmpReply.answer, /\[18\/20 free\]/)
+  assert.match(cmpReply.answer, /\[rule-based\]/)
 
-  // Exhaust remaining 18 free turns and verify cap message on turn #21
-  for (let i = 0; i < 18; i++) {
-    await askGiftiAiQuestion('How is Plush Pepe doing?', 'Plush Pepe', catalog)
+  // Verify >25 consecutive offline rule-based questions never hit a fake quota limit
+  for (let i = 0; i < 25; i++) {
+    const r = await askGiftiAiQuestion('How is Plush Pepe doing?', 'Plush Pepe', catalog)
+    assert.doesNotMatch(r.title, /Demo Limit/)
   }
-  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 0)
-  const capped = await askGiftiAiQuestion('One more free turn?', 'Plush Pepe', catalog)
-  assert.match(capped.title, /Demo Limit/)
-  assert.match(capped.answer, /20\/20 free demo messages used/)
 
-  // Applying a 1-time RAM-only key bypasses the free cap, calls Whisper + LLM, and never touches localStorage
-  setEphemeralAiToken('gsk_test_ephemeral_session_key_1234567890')
+  // Applying a 1-time RAM-only key calls Whisper + LLM and never touches localStorage
+  assert.equal(setEphemeralAiToken('gsk_test_ephemeral_session_key_1234567890'), true)
   assert.equal(getGiftiSessionSnapshot().hasEphemeralKey, true)
   assert.equal(getGiftiSessionSnapshot().provider, 'groq')
 
@@ -92,8 +97,8 @@ test('Gift Sets routes return clean empty state while Gifti AI bridge enforces 2
   assert.equal(liveAi.collection, 'Astral Shard')
   assert.match(liveAi.answer, /1,180 GRAM/)
 
-  // Verify Gemini sends key strictly via x-goog-api-key header (never in URL query string) and preserves free quota on error
-  setEphemeralAiToken('AIzaSyTestEphemeralGeminiKey1234567890')
+  // Verify Gemini sends key strictly via x-goog-api-key header (never in URL query string)
+  assert.equal(setEphemeralAiToken('AIzaSyTestEphemeralGeminiKey1234567890'), true)
   assert.equal(getGiftiSessionSnapshot().provider, 'gemini')
   let geminiUrlSeen = ''
   let geminiHeadersSeen = {}
@@ -112,27 +117,34 @@ test('Gift Sets routes return clean empty state while Gifti AI bridge enforces 2
   assert.equal(geminiHeadersSeen['x-goog-api-key'], 'AIzaSyTestEphemeralGeminiKey1234567890')
   assert.match(geminiReply.answer, /4,820 GRAM/)
 
-  // Pre-aborted signal throws AbortError immediately without mutating freeTurnsRemaining
+  // Pre-aborted signal throws AbortError immediately
   clearEphemeralAiToken()
   resetGiftiSessionForTests()
   const preAborted = new AbortController()
   preAborted.abort()
   await assert.rejects(() => askGiftiAiQuestion('Should abort', 'Plush Pepe', catalog, preAborted.signal))
-  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 20)
 })
 
-test('Tools -> Portfolio & Floor Resolver endpoints price @username and public TON wallet addresses (with TonAPI mapping + fallback)', async () => {
+test('Tools -> Portfolio & Floor Resolver price @collector demo explicitly, resolve real TON & Fragment .t.me wallets via TonAPI, and never fabricate fallback holdings on error', async () => {
   assert.equal(isLikelyTonAddress('UQCiS2kxLhIh8f4t05QUps3ODPoN7NQe__BiY2--QaKtJw8_'), true)
   assert.equal(isLikelyTonAddress('durov.ton'), true)
+  assert.equal(isLikelyTonAddress('durov.t.me'), false, '.t.me routes through DNS owner lookup, not /v2/accounts')
   assert.equal(isLikelyTonAddress('@collector'), false)
+  assert.equal(isDemoPortfolioHandle('@collector'), true)
+  assert.equal(isDemoPortfolioHandle('@alice'), false)
 
-  // 1. SwiftGifts cursor portfolio endpoint for @collector
+  // 1. SwiftGifts cursor portfolio endpoint for explicit demo handle @collector
   const profileRes = await hostHttpFetch(`${PUBLIC_API_ORIGIN}/api/v1/api/price_profile?username=%40collector&limit=50`)
   assert.equal(profileRes.status, 200)
   const profile = await profileRes.json()
   assert.equal(profile.has_more, false)
+  assert.equal(profile.is_demo, true)
+  assert.equal(profile.portfolio_source, 'demo')
+  assert.match(profile.notice ?? '', /Demo portfolio \(synthetic/i)
   assert.ok(profile.gifts.length >= 4)
   assert.equal(profile.gifts[0].collection, 'Plush Pepe')
+  assert.match(profile.gifts[0].backdrop, /\(Demo\)$/, 'Visible backdrop carries (Demo) badge in UI')
+  assert.match(profile.gifts[0].floor_source, /\(demo\)$/)
   assert.equal(profile.gifts[0].floor_tier, 'combo')
   assert.ok(profile.gifts[0].floor_ton > 0)
   assert.ok(
@@ -193,6 +205,86 @@ test('Tools -> Portfolio & Floor Resolver endpoints price @username and public T
   assert.equal(onchain.gifts[0].collection, 'Astral Shard')
   assert.equal(onchain.gifts[0].number, 19)
   assert.equal(onchain.gifts[0].backdrop, 'Emerald')
+
+  // 4. Real TON wallet lookup failure MUST return an error instead of silently fabricating demo holdings
+  const failingTonFetch = async () => new Response('rate limited', { status: 429 })
+  const failedWallet = await resolveUserPortfolioPayload(
+    'UQCiS2kxLhIh8f4t05QUps3ODPoN7NQe__BiY2--QaKtJw8_',
+    null,
+    '50',
+    'swift',
+    catalog,
+    failingTonFetch,
+  )
+  assert.equal(failedWallet.ok, false)
+  assert.equal(failedWallet.status, 503)
+  assert.match(failedWallet.error, /rate limit/i)
+
+  // 5. Fragment collectible @username AND direct name.t.me resolve via real TonAPI /v2/dns/{name}.t.me owner lookup
+  const seenUrls = []
+  const mockDnsAndNftsFetch = async url => {
+    const s = String(url)
+    seenUrls.push(s)
+    if (s.endsWith('/v2/dns/alice.t.me')) {
+      return new Response(
+        JSON.stringify({
+          name: 'alice.t.me',
+          item: { owner: { address: 'UQCiS2kxLhIh8f4t05QUps3ODPoN7NQe__BiY2--QaKtJw8_', is_wallet: true } },
+        }),
+        { status: 200 },
+      )
+    }
+    if (s.endsWith('/v2/dns/unregistered_user.t.me')) {
+      return new Response('not found', { status: 404 })
+    }
+    if (s.includes('/v2/accounts/UQCiS2kxLhIh8f4t05QUps3ODPoN7NQe__BiY2--QaKtJw8_/nfts')) {
+      return new Response(
+        JSON.stringify({
+          nft_items: [
+            {
+              index: 18,
+              collection: { name: 'Astral Shard' },
+              metadata: {
+                name: 'Astral Shard #19',
+                attributes: [
+                  { trait_type: 'Model', value: 'Unlisted Rare Variant' },
+                  { trait_type: 'Backdrop', value: 'Emerald' },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+    return new Response('bad request', { status: 400 })
+  }
+  const resolvedFragment = await resolveUserPortfolioPayload('@alice', null, '50', 'swift', catalog, mockDnsAndNftsFetch)
+  assert.equal(resolvedFragment.ok, true)
+  assert.equal(resolvedFragment.isDemo, false)
+  assert.equal(resolvedFragment.source, 'tonapi')
+  assert.equal(resolvedFragment.payload.gifts.length, 1)
+  assert.equal(resolvedFragment.payload.gifts[0].collection, 'Astral Shard')
+  assert.equal(
+    resolvedFragment.payload.gifts[0].model,
+    'Unlisted Rare Variant',
+    'Real on-chain NFT keeps its actual model trait instead of inventing a bundled model',
+  )
+
+  const resolvedDirectDomain = await resolveUserPortfolioPayload('alice.t.me', null, '50', 'swift', catalog, mockDnsAndNftsFetch)
+  assert.equal(resolvedDirectDomain.ok, true)
+  assert.equal(resolvedDirectDomain.payload.gifts[0].collection, 'Astral Shard')
+  assert.equal(
+    seenUrls.some(u => u.includes('/v2/accounts/alice.t.me/')),
+    false,
+    'Direct .t.me input must route through /v2/dns/{name}.t.me, never /v2/accounts/alice.t.me/nfts',
+  )
+
+  // 6. Non-Fragment @username returns honest 404 error instead of fake holdings
+  const unknownUser = await resolveUserPortfolioPayload('@unregistered_user', null, '50', 'swift', catalog, mockDnsAndNftsFetch)
+  assert.equal(unknownUser.ok, false)
+  assert.equal(unknownUser.status, 404)
+  assert.match(unknownUser.error, /no public Fragment \.t\.me wallet/i)
 })
 
 test('CollectorToolbox research tool toggles 256x144 5-venue spread bars on G2 and dispatches spread PNG to Telegram', async () => {
@@ -243,58 +335,50 @@ test('Gifti handles greetings, "hello what can you do", controls/standalone help
   resetGiftiSessionForTests()
   const catalog = getBundledCatalog()
 
-  // 1. "hello what can you do" returns capabilities intro, hides irrelevant chart, and does NOT burn a free turn!
+  // 1. "hello what can you do" returns capabilities intro and hides irrelevant chart
   const capReply = await askGiftiAiQuestion('hello what can you do', 'Plush Pepe', catalog)
-  assert.equal(capReply.title, 'Gifti · G2 Market Copilot')
+  assert.equal(capReply.title, 'Gifti · Offline Analyst')
   assert.equal(capReply.showChart, false)
-  assert.match(capReply.answer, /I'm Gifti, your Telegram Collectible Gifts copilot on Even G2/)
+  assert.match(capReply.answer, /rule-based offline Telegram Gifts analyst on Even G2/)
   assert.doesNotMatch(capReply.answer, /Plush Pepe trades at/)
-  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 20, 'Capability/greeting queries must not burn free demo turns')
 
-  // 2. Pure greeting ("Hi!") and thanks ("thank you") also preserve quota and omit random floor dumps
+  // 2. Pure greeting ("Hi!") and thanks ("thank you") also omit random floor dumps
   const hiReply = await askGiftiAiQuestion('Hi!', 'Plush Pepe', catalog)
-  assert.equal(hiReply.title, 'Gifti · G2 Market Copilot')
+  assert.equal(hiReply.title, 'Gifti · Offline Analyst')
   assert.equal(hiReply.showChart, false)
-  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 20)
 
   const thxReply = await askGiftiAiQuestion('thank you!', 'Plush Pepe', catalog)
   assert.equal(thxReply.showChart, false)
   assert.match(thxReply.answer, /Happy to help/)
-  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 20)
 
-  // 3. Controls & standalone question explains G2 temple/R1 Ring/offline WASM standalone operation without burning quota
+  // 3. Controls & standalone question explains G2 temple/R1 Ring/offline WASM standalone operation
   const ctrlReply = await askGiftiAiQuestion('Can this work standalone with gestures and voice commands?', 'Plush Pepe', catalog)
   assert.equal(ctrlReply.title, 'Gifti · G2 & R1 Controls')
   assert.equal(ctrlReply.showChart, false)
-  assert.match(ctrlReply.answer, /standalone in Even App with zero backend/)
-  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 20)
+  assert.match(ctrlReply.answer, /run locally with zero backend/)
 
   // 4. Off-topic question ("what is the weather today") gives polite Gifti scope nudge instead of Plush Pepe floor
   const offTopic = await askGiftiAiQuestion('what is the weather today?', 'Plush Pepe', catalog)
-  assert.equal(offTopic.title, 'Gifti · G2 Market Copilot')
+  assert.equal(offTopic.title, 'Gifti · Offline Analyst')
   assert.equal(offTopic.showChart, false)
   assert.match(offTopic.answer, /tuned for Telegram Collectible Gifts/)
-  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 20)
 
-  // 5. Market-wide queries ("how is the market today / top movers" & "most expensive gift") compute real catalog leaders and DO consume a turn
+  // 5. Market-wide queries ("how is the market today / top movers" & "most expensive gift") compute real catalog leaders
   const pulseReply = await askGiftiAiQuestion('How is the market today? Any top movers?', 'Plush Pepe', catalog)
   assert.equal(pulseReply.title, 'Gifti · 24h Market Pulse')
   assert.equal(pulseReply.showChart, true)
   assert.match(pulseReply.answer, /top 24h gainers/)
-  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 19)
 
   const blueChip = await askGiftiAiQuestion('What is the most expensive gift collection?', 'Astral Shard', catalog)
   assert.equal(blueChip.title, 'Gifti · Blue-Chip Leaders')
   assert.equal(blueChip.showChart, true)
   assert.match(blueChip.answer, /Highest floors: 1\)/)
-  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 18)
 
   // 6. Greeting + real gift question ("hello what is Plush Pepe floor?") still answers the gift question!
   const greetPlusGift = await askGiftiAiQuestion('hello what is Plush Pepe floor?', 'Plush Pepe', catalog)
   assert.equal(greetPlusGift.title, 'Gifti · Plush Pepe')
   assert.equal(greetPlusGift.showChart, true)
   assert.match(greetPlusGift.answer, /Plush Pepe trades at/)
-  assert.equal(getGiftiSessionSnapshot().freeTurnsRemaining, 17)
 
   // 7. End-to-end CollectorToolbox + G2 toolView formatting for "hello what can you do"
   const toolbox = createCollectorToolbox(
@@ -309,14 +393,14 @@ test('Gifti handles greetings, "hello what can you do", controls/standalone help
   )
   await toolbox.submitGiftiPrompt('hello what can you do', 'phone')
   const qaPage = toolbox.getSnapshot()
-  assert.equal(qaPage.title, 'Gifti · G2 Market Copilot', 'Must NOT append fake · 1/4 preset index')
+  assert.equal(qaPage.title, 'Gifti · Offline Analyst', 'Must NOT append fake · 1/4 preset index')
   assert.equal(qaPage.chart, undefined, 'Must NOT attach random Plush Pepe 7d chart to capability greeting')
   assert.equal(qaPage.browse, undefined, 'Custom Q&A uses wrapped reading pages instead of 1-line compact browse truncation')
   assert.match(qaPage.lines[0], /Asked: "hello what can you do"/)
   assert.doesNotMatch(qaPage.lines.join('\n'), /Topic: Floor & 7d momentum/)
 
   const g2View = toolView(qaPage, 0, undefined, true)
-  assert.match(g2View.content, /Gifti · G2 Market Copilot/)
+  assert.match(g2View.content, /Gifti · Offline Analyst/)
   assert.match(g2View.content, /Asked: "hello what can you do"/)
   assert.doesNotMatch(g2View.content, /Topic: Floor/)
 

@@ -1118,3 +1118,137 @@ test('late checkDelivery(A) clears only question A without clobbering B, and in-
   const savedDemoCfg = JSON.parse(storage.get('telegifts_g2_relay_cfg_v1'))
   assert.deepEqual(savedDemoCfg, { relayUrl: '', relayToken: '', explicitDemo: true })
 })
+
+test('telegramRelay enforces channel_post allowlist and bounds pendingTokens and receipts maps', async t => {
+  // 1. Default relay (no allowedChannels) rejects arbitrary third-party channel posts
+  const defaultRelay = await startTestRelay({
+    botToken: 'tok',
+    botUsername: 'bot',
+  })
+  t.after(defaultRelay.close)
+
+  defaultRelay.relay.ingestTelegramUpdates([
+    {
+      update_id: 1,
+      channel_post: {
+        message_id: 10,
+        date: 1700000000,
+        chat: { id: -100555, username: 'random_spam_channel', title: 'Spam' },
+        text: 'Injected headline\nBody',
+      },
+    },
+  ])
+  assert.equal(defaultRelay.relay.state.digest.length, 0, 'Unallowlisted channel_post must be ignored')
+
+  // 2. Relay with explicit allowedChannels accepts allowlisted channels (by @username or id) and rejects others
+  const allowlisted = await startTestRelay({
+    botToken: 'tok',
+    botUsername: 'bot',
+    allowedChannels: ['@gifts_alpha', '-100999'],
+    initialState: {
+      privateChat: { id: '42', label: '@owner' },
+    },
+    callTelegram: async () => ({ message_id: 1 }),
+  })
+  t.after(allowlisted.close)
+
+  allowlisted.relay.ingestTelegramUpdates([
+    {
+      update_id: 1,
+      channel_post: {
+        message_id: 11,
+        date: 1700000000,
+        chat: { id: -100111, username: 'Gifts_Alpha', title: 'Gifts Alpha' },
+        text: 'Plush Pepe breakout\nFloor +9%',
+      },
+    },
+    {
+      update_id: 2,
+      channel_post: {
+        message_id: 12,
+        date: 1700000001,
+        chat: { id: -100999, title: 'Numeric Channel' },
+        text: 'Astral Shard watch',
+      },
+    },
+    {
+      update_id: 3,
+      channel_post: {
+        message_id: 13,
+        date: 1700000002,
+        chat: { id: -100777, username: 'untrusted', title: 'Untrusted' },
+        text: 'Should be rejected',
+      },
+    },
+  ])
+  assert.equal(allowlisted.relay.state.digest.length, 2)
+  assert.equal(allowlisted.relay.state.digest[0].headline, 'Astral Shard watch')
+  assert.equal(allowlisted.relay.state.digest[1].headline, 'Plush Pepe breakout')
+
+  // 3. Expired pendingTokens are purged automatically
+  allowlisted.relay.state.pendingTokens.set('pair_private_expired1', {
+    kind: 'private',
+    expiresAt: new Date(Date.now() - 60_000).toISOString(),
+  })
+  const linkRes = await fetch(`${allowlisted.baseUrl}/g2/telegram/link`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'private' }),
+  })
+  assert.equal(linkRes.status, 200)
+  assert.equal(allowlisted.relay.state.pendingTokens.has('pair_private_expired1'), false, 'Expired tokens must be purged')
+  assert.equal(allowlisted.relay.state.pendingTokens.size, 1)
+
+  // 4. Receipts map stays capped at 500 entries
+  for (let i = 0; i < 505; i++) {
+    allowlisted.relay.state.receipts.set(`pre-${i}`, { status: 'sent' })
+  }
+  const sendRes = await fetch(`${allowlisted.baseUrl}/g2/telegram/reply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requestId: 'req-cap-check', text: 'hello' }),
+  })
+  assert.equal(sendRes.status, 200)
+  assert.ok(allowlisted.relay.state.receipts.size <= 500, 'Receipts map must stay bounded at <= 500 entries')
+  assert.equal(allowlisted.relay.state.receipts.has('req-cap-check'), true)
+})
+
+test('telegramRelay re-polls immediately after a successful getUpdates call and backs off after errors', async t => {
+  const callTimestamps = []
+  let shouldFail = false
+  let done
+  const finished = new Promise(resolve => {
+    done = resolve
+  })
+
+  const relay = await startTestRelay({
+    botToken: 'tok',
+    botUsername: 'bot',
+    callTelegram: async method => {
+      if (method !== 'getUpdates') return { ok: true }
+      callTimestamps.push(Date.now())
+      if (callTimestamps.length === 1) return []
+      if (callTimestamps.length === 2) {
+        shouldFail = true
+        throw new Error('transient error')
+      }
+      if (callTimestamps.length >= 3) {
+        relay.relay.stopPolling()
+        done()
+      }
+      return []
+    },
+  })
+  t.after(() => {
+    relay.relay.stopPolling()
+    return relay.close()
+  })
+
+  relay.relay.startPolling()
+  await finished
+  assert.equal(shouldFail, true)
+  const successGapMs = callTimestamps[1] - callTimestamps[0]
+  const errorBackoffMs = callTimestamps[2] - callTimestamps[1]
+  assert.ok(successGapMs < 300, `Expected immediate re-poll on success, got ${successGapMs}ms`)
+  assert.ok(errorBackoffMs >= 900, `Expected error backoff (~1200ms), got ${errorBackoffMs}ms`)
+})

@@ -62,6 +62,55 @@ export function createTelegramRelayServer(options = {}) {
     .split(',')
     .map(s => s.trim())
     .filter(Boolean)
+  const rawAllowedChannels = Array.isArray(options.allowedChannels)
+    ? options.allowedChannels.join(',')
+    : String(options.allowedChannels ?? process.env.RELAY_ALLOWED_CHANNELS ?? '')
+  const allowedChannels = new Set(
+    rawAllowedChannels
+      .split(',')
+      .map(s => s.trim().replace(/^@/, '').toLowerCase())
+      .filter(Boolean),
+  )
+
+  const MAX_RECEIPTS = 500
+  const MAX_PENDING_TOKENS = 200
+
+  function purgeExpiredPendingTokens(now = Date.now()) {
+    for (const [token, info] of state.pendingTokens) {
+      if (Date.parse(info.expiresAt) <= now) {
+        state.pendingTokens.delete(token)
+      }
+    }
+    while (state.pendingTokens.size > MAX_PENDING_TOKENS) {
+      const oldest = state.pendingTokens.keys().next().value
+      if (oldest === undefined) break
+      state.pendingTokens.delete(oldest)
+    }
+  }
+
+  function storeReceipt(requestId, receipt) {
+    if (state.receipts.has(requestId)) {
+      state.receipts.delete(requestId)
+    }
+    state.receipts.set(requestId, receipt)
+    while (state.receipts.size > MAX_RECEIPTS) {
+      const oldest = state.receipts.keys().next().value
+      if (oldest === undefined) break
+      state.receipts.delete(oldest)
+    }
+  }
+
+  function isAllowedChannelPost(chat) {
+    if (!chat) return false
+    const idKey = String(chat.id ?? '').trim().toLowerCase()
+    const userKey = String(chat.username ?? '').trim().replace(/^@/, '').toLowerCase()
+    if (allowedChannels.size > 0) {
+      return (idKey && allowedChannels.has(idKey)) || (userKey && allowedChannels.has(userKey))
+    }
+    // Without explicit RELAY_ALLOWED_CHANNELS, reject arbitrary third-party channels so
+    // strangers cannot add the bot to a channel and inject headlines onto the user's HUD.
+    return false
+  }
 
   if (!isLoopbackHost(host) && !authToken) {
     throw new Error('RELAY_AUTH_TOKEN is required when binding RELAY_HOST outside loopback (127.0.0.1 / ::1).')
@@ -182,6 +231,7 @@ export function createTelegramRelayServer(options = {}) {
   }
 
   function ingestTelegramUpdates(updates) {
+    purgeExpiredPendingTokens()
     let changed = false
     for (const update of updates) {
       state.updateOffset = Math.max(state.updateOffset, update.update_id + 1)
@@ -236,17 +286,24 @@ export function createTelegramRelayServer(options = {}) {
 
       const post = update.channel_post
       if (post && typeof post.text === 'string' && post.text.trim()) {
-        const lines = post.text.trim().split('\n')
-        state.digest.unshift({
-          id: `ch-${post.chat.id}-${post.message_id}`,
-          channel: post.chat.username ? `@${post.chat.username}` : post.chat.title || 'Channel',
-          headline: lines[0].slice(0, 96),
-          summary: lines.slice(1).join(' ').slice(0, 180) || lines[0],
-          timestamp: new Date(post.date * 1000).toISOString(),
-          kind: 'channel',
-        })
-        state.digest = state.digest.slice(0, 20)
-        changed = true
+        if (!isAllowedChannelPost(post.chat)) {
+          const chRef = post.chat?.username ? `@${post.chat.username}` : String(post.chat?.id ?? 'unknown')
+          console.warn(
+            `[telegram-relay] Ignored channel_post from unallowlisted channel ${chRef} (set RELAY_ALLOWED_CHANNELS to enable)`,
+          )
+        } else {
+          const lines = post.text.trim().split('\n')
+          state.digest.unshift({
+            id: `ch-${post.chat.id}-${post.message_id}`,
+            channel: post.chat.username ? `@${post.chat.username}` : post.chat.title || 'Channel',
+            headline: lines[0].slice(0, 96),
+            summary: lines.slice(1).join(' ').slice(0, 180) || lines[0],
+            timestamp: new Date(post.date * 1000).toISOString(),
+            kind: 'channel',
+          })
+          state.digest = state.digest.slice(0, 20)
+          changed = true
+        }
       }
 
       const cb = update.callback_query
@@ -324,6 +381,7 @@ export function createTelegramRelayServer(options = {}) {
 
   async function pollTelegramUpdates() {
     if (!botToken || pollingStopped) return
+    let nextDelayMs = 0
     try {
       const updates = await callTelegram('getUpdates', {
         offset: state.updateOffset,
@@ -332,10 +390,11 @@ export function createTelegramRelayServer(options = {}) {
       })
       ingestTelegramUpdates(updates)
     } catch (err) {
+      nextDelayMs = 1200
       console.warn('[telegram-relay] Poll error:', err.message)
     } finally {
       if (botToken && !pollingStopped) {
-        pollTimer = setTimeout(pollTelegramUpdates, 1200)
+        pollTimer = setTimeout(pollTelegramUpdates, nextDelayMs)
       }
     }
   }
@@ -498,7 +557,7 @@ export function createTelegramRelayServer(options = {}) {
     const promise = (async () => {
       try {
         const receipt = await action()
-        state.receipts.set(requestId, receipt)
+        storeReceipt(requestId, receipt)
         return receipt
       } finally {
         state.inFlight.delete(requestId)
@@ -606,9 +665,11 @@ export function createTelegramRelayServer(options = {}) {
           sendJson(req, res, 503, { error: 'Configure TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_USERNAME first' }, originDecision)
           return
         }
+        purgeExpiredPendingTokens()
         const token = `pair_${kind}_${randomUUID().slice(0, 8)}`
         const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString()
         state.pendingTokens.set(token, { kind, expiresAt })
+        purgeExpiredPendingTokens()
         const param = kind === 'group' ? `startgroup=${token}` : `start=${token}`
         sendJson(req, res, 200, {
           id: token,
