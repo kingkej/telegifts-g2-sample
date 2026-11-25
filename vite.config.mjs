@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, readFileSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import react from '@vitejs/plugin-react'
@@ -26,14 +26,22 @@ export default defineConfig({
       configureServer(server) {
         server.middlewares.use((request, response, next) => {
           const url = new URL(request.url ?? '/', 'http://localhost')
-          if (request.method === 'GET' && url.pathname === '/telegifts-g2.ehpk') {
+          if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/telegifts-g2.ehpk') {
             const ehpkFile = resolve(project, 'telegifts-g2.ehpk')
-            if (existsSync(ehpkFile)) {
-              response.setHeader('Content-Type', 'application/octet-stream')
-              response.setHeader('Content-Disposition', 'attachment; filename="telegifts-g2.ehpk"')
-              createReadStream(ehpkFile).on('error', next).pipe(response)
+            if (!existsSync(ehpkFile)) {
+              response.statusCode = 404
+              response.end()
               return
             }
+            response.setHeader('Content-Type', 'application/octet-stream')
+            response.setHeader('Content-Disposition', 'attachment; filename="telegifts-g2.ehpk"')
+            response.setHeader('Content-Length', String(statSync(ehpkFile).size))
+            if (request.method === 'HEAD') {
+              response.end()
+              return
+            }
+            createReadStream(ehpkFile).on('error', next).pipe(response)
+            return
           }
           const file = speechModelFiles.get(url.pathname)
           if (
