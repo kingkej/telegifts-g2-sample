@@ -480,7 +480,7 @@ export function resolveFloorTriplesPayload(
     const models = getBundledModels(colName)
     const matchedModel = models.find(m => resolveDeepLinkMatchKey(m.name) === resolveDeepLinkMatchKey(t.model))
     const cleanBackdrop = t.backdrop.trim().replace(/\s*\(demo\)$/i, '')
-    const mult = BACKDROP_MULT[cleanBackdrop] ?? 1.03
+    const mult = cleanBackdrop ? (BACKDROP_MULT[cleanBackdrop] ?? 1.0) : 1.0
     const prices = numericProviderMap(matchedModel?.floors ?? catalog.collection_floors[colName], mult)
     if (Object.keys(prices).length > 0) {
       out[key] = prices

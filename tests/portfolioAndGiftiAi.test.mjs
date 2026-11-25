@@ -14,10 +14,12 @@ import {
   transcribeWithEphemeralAiOrFallback,
 } from '../src/services/giftiAiBridge.ts'
 import { hostHttpFetch, PUBLIC_API_ORIGIN } from '../src/services/phoneHostBridge.ts'
+import { findForbiddenHashedTokens, sha256Prefix } from '../scripts/auditPublicRepo.mjs'
 import {
   fetchTonAddressGiftPortfolio,
   isDemoPortfolioHandle,
   isLikelyTonAddress,
+  resolveFloorTriplesPayload,
   resolveUserPortfolioPayload,
 } from '../src/services/tonPortfolio.ts'
 
@@ -285,6 +287,23 @@ test('Tools -> Portfolio & Floor Resolver price @collector demo explicitly, reso
   assert.equal(unknownUser.ok, false)
   assert.equal(unknownUser.status, 404)
   assert.match(unknownUser.error, /no public Fragment \.t\.me wallet/i)
+
+  // 7. Absent/unknown backdrop uses consistent 1.0 multiplier in both portfolio and floor triple resolution
+  const emptyBackdropFloors = resolveFloorTriplesPayload(
+    [{ collection: 'Astral Shard', model: 'Unlisted Rare Variant', backdrop: '' }],
+    catalog,
+  )
+  const expectedColPortals = catalog.collection_floors['Astral Shard'].portals
+  assert.equal(emptyBackdropFloors['Astral Shard|Unlisted Rare Variant|'].portals, expectedColPortals)
+
+  // 8. Public repo audit detects hashed identifiers both standalone and embedded inside >32-char runs
+  const customEntries = [{ len: 10, hash: sha256Prefix('secretterm'), label: 'Synthetic Secret' }]
+  assert.deepEqual(findForbiddenHashedTokens('standalone secretterm here', customEntries), ['Synthetic Secret'])
+  assert.deepEqual(
+    findForbiddenHashedTokens('prefix_very_long_identifier_xsecrettermx_exceeding_32_characters', customEntries),
+    ['Synthetic Secret'],
+  )
+  assert.deepEqual(findForbiddenHashedTokens('clean_text_without_match', customEntries), [])
 })
 
 test('CollectorToolbox research tool toggles 256x144 5-venue spread bars on G2 and dispatches spread PNG to Telegram', async () => {

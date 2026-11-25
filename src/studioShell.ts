@@ -467,7 +467,22 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
     ringBtn.classList.remove('tg-btn--recording')
     bindings.sim.holdEnd('RING')
   }
+  const onRingKeyDown = (ev: KeyboardEvent) => {
+    if (ev.code === 'Space' && !ev.repeat) {
+      ev.preventDefault()
+      startRing()
+    }
+  }
+  const onRingKeyUp = (ev: KeyboardEvent) => {
+    if (ev.code === 'Space') {
+      ev.preventDefault()
+      endRing()
+    }
+  }
   ringBtn.addEventListener('pointerdown', startRing)
+  ringBtn.addEventListener('keydown', onRingKeyDown)
+  ringBtn.addEventListener('keyup', onRingKeyUp)
+  ringBtn.addEventListener('blur', endRing)
   window.addEventListener('pointerup', endRing)
   window.addEventListener('pointercancel', endRing)
   window.addEventListener('blur', endRing)
@@ -712,6 +727,10 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
     unsubMirror?.()
     unsubGifti()
     unsubVoice()
+    ringBtn.removeEventListener('pointerdown', startRing)
+    ringBtn.removeEventListener('keydown', onRingKeyDown)
+    ringBtn.removeEventListener('keyup', onRingKeyUp)
+    ringBtn.removeEventListener('blur', endRing)
     window.removeEventListener('pointerdown', onAnyManualPointerDown, true)
     window.removeEventListener('pointerup', endRing)
     window.removeEventListener('pointercancel', endRing)

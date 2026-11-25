@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { basename, join, relative } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 const ROOT = process.cwd()
 
@@ -20,15 +21,49 @@ const FORBIDDEN_PATTERNS = [
   { name: 'Build-time relay token variable', regex: /VITE_TELEGRAM_RELAY_TOKEN/ },
 ]
 
-// SHA-256 prefixes (24 hex chars) of private internal identifiers that must never appear in the public repo
-const FORBIDDEN_TOKEN_HASHES = new Map([
-  ['fc36ae5a9d4a45d8f9427423', 'Internal private workspace identifier'],
-  ['d65d0f47240cc1fd8e64f9fb', 'Internal private swap domain'],
-  ['deb6845ce6664f1b51c288fa', 'Internal private bot handle'],
-])
+// SHA-256 prefixes (24 hex chars) + exact lengths of private internal identifiers
+// checked across every sliding window inside word-character runs (standalone or embedded).
+const FORBIDDEN_HASH_ENTRIES = [
+  { len: 15, hash: 'fc36ae5a9d4a45d8f9427423', label: 'Internal private workspace identifier' },
+  { len: 10, hash: 'd65d0f47240cc1fd8e64f9fb', label: 'Internal private swap domain' },
+  { len: 14, hash: 'deb6845ce6664f1b51c288fa', label: 'Internal private bot handle' },
+]
 
-function sha256Prefix(token) {
+export function sha256Prefix(token) {
   return createHash('sha256').update(token).digest('hex').slice(0, 24)
+}
+
+export function findForbiddenHashedTokens(content, entries = FORBIDDEN_HASH_ENTRIES) {
+  if (!entries.length) return []
+  const byLength = new Map()
+  let minLen = Infinity
+  for (const entry of entries) {
+    if (entry.len < minLen) minLen = entry.len
+    let map = byLength.get(entry.len)
+    if (!map) {
+      map = new Map()
+      byLength.set(entry.len, map)
+    }
+    map.set(entry.hash, entry.label)
+  }
+
+  const hits = new Set()
+  const seenWindows = new Set()
+  for (const match of content.matchAll(/[a-z0-9_]+/gi)) {
+    const run = match[0].toLowerCase()
+    if (run.length < minLen) continue
+    for (const [len, hashes] of byLength) {
+      if (run.length < len) continue
+      for (let i = 0; i <= run.length - len; i++) {
+        const sub = run.slice(i, i + len)
+        if (seenWindows.has(sub)) continue
+        seenWindows.add(sub)
+        const label = hashes.get(sha256Prefix(sub))
+        if (label) hits.add(label)
+      }
+    }
+  }
+  return [...hits]
 }
 
 async function walk(dir) {
@@ -77,15 +112,8 @@ async function main() {
       }
     }
 
-    const seenTokens = new Set()
-    for (const match of content.matchAll(/[a-z0-9_]{8,32}/gi)) {
-      const token = match[0].toLowerCase()
-      if (seenTokens.has(token)) continue
-      seenTokens.add(token)
-      const label = FORBIDDEN_TOKEN_HASHES.get(sha256Prefix(token))
-      if (label) {
-        violations.push(`${rel}: matched forbidden internal identifier (${label})`)
-      }
+    for (const label of findForbiddenHashedTokens(content)) {
+      violations.push(`${rel}: matched forbidden internal identifier (${label})`)
     }
   }
 
@@ -115,7 +143,10 @@ async function main() {
   console.log(`Public repo hygiene audit PASSED (${files.length} workspace files scanned, 0 secret/scope violations).`)
 }
 
-main().catch(err => {
-  console.error(err)
-  process.exit(1)
-})
+const isEntrypoint = Boolean(process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+if (isEntrypoint) {
+  main().catch(err => {
+    console.error(err)
+    process.exit(1)
+  })
+}
