@@ -1,0 +1,8 @@
+{
+  "name": "@telegifts/phone",
+  "version": "0.2.0",
+  "type": "module",
+  "main": "./index.js",
+  "style": "./style.css",
+  "types": "./index.d.ts"
+}
