@@ -357,7 +357,7 @@ test('Talk to Gifti opens consent from a collection and a retired menu cannot op
   assert.equal(microphone.mock.callCount(), 0)
 })
 
-test('recording from a live tool overlays the lens, accepts only wearer audio and returns to that tool', async t => {
+test('recording from a live tool overlays the lens, accepts glasses audio and rejects phone audio before returning to that tool', async t => {
   const card = ready('Toy Bear'), host = display(t, card)
   globalThis.document = Object.assign(new EventTarget(), { hidden: false })
   t.after(() => { delete globalThis.document })
@@ -388,10 +388,11 @@ test('recording from a live tool overlays the lens, accepts only wearer audio an
   await start()
   const finish = lastArg(host.bridge.rebuildPageContainer).menuObject.menuItems.find(i => i.itemName === 'Finish recording')
   const speech = new Uint8Array(Int16Array.from({ length: 3200 }, (_, i) => i % 2 ? 1400 : -1400).buffer)
-  const audio = (source, speakerRole) => evenHubEventFromJson({ type: 'audioEvent', jsonData: { audioPcm: [...speech], source, speakerRole } })
-  host.input(audio('phone', 'self'))
-  host.input(audio('glasses', 'other'))
-  host.input(audio('glasses', 'self'))
+  const audioChunk = (bytes, source, speakerRole) =>
+    evenHubEventFromJson({ type: 'audioEvent', jsonData: { audioPcm: [...bytes], source, speakerRole } })
+  host.input(audioChunk(speech, 'phone', 'self'))
+  host.input(audioChunk(speech.subarray(0, 3200), 'glasses', 'other'))
+  host.input(audioChunk(speech.subarray(3200), 'glasses', 'self'))
   host.input(menuSelection(finish.itemID))
   assert.deepEqual(await capture, speech)
   await settle()
@@ -537,7 +538,6 @@ test('native and Explore menus start glasses-only voice and Back restores the ca
   const pcm = [...new Uint8Array(voiced.buffer)]
   const audio = (source, speakerRole) => evenHubEventFromJson({ type: 'audioEvent', jsonData: { audioPcm: pcm, source, speakerRole } })
   host.input(audio('phone', 'self'))
-  host.input(audio('glasses', 'other'))
   host.input(click)
   assert.equal(voice.controls.getSnapshot().phase, 'listening')
   host.input(menuSelection(lastArg(host.bridge.rebuildPageContainer).menuObject.menuItems[0].itemID))
@@ -553,7 +553,7 @@ test('native and Explore menus start glasses-only voice and Back restores the ca
   await t.waitFor(() => assert.equal(voice.controls.getSnapshot().phase, 'listening'))
   await settle()
   clock += 300
-  host.input(audio('glasses', 'self'))
+  host.input(audio('glasses', 'other'))
   host.input(textEvent({ containerID: rebuiltText(host.bridge).containerID }))
   await settle()
   assert.match(rebuiltText(host.bridge).content, /Recognizing command/)

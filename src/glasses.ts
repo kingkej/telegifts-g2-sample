@@ -686,7 +686,7 @@ export async function connectGlasses(
 
   const telemetry: GlassesDeviceTelemetry = {
     connected: true,
-    batteryLevel: 88,
+    batteryLevel: null,
     isCharging: false,
     isWearing: true,
     lastInputSource: null,
@@ -1368,14 +1368,16 @@ export async function connectGlasses(
     if (event.audioEvent) {
       const audio = event.audioEvent
       if (phoneVisible && audio.source === AudioInputSource.Glasses) {
-        if (audio.speakerRole !== AudioSpeakerRole.Other) {
+        // When an explicit wearer voice/PTT/question session is active, feed all glasses PCM
+        // regardless of heuristic speakerRole so beamforming misclassification never drops wearer speech.
+        if (isWearerVoiceBusy()) {
           if (composePtt) composePtt.utterance.append(audio.audioPcm)
           else voice?.receive(audio.audioPcm)
         } else if (
-          (transcribeOverheard || voice)
+          audio.speakerRole === AudioSpeakerRole.Other
+          && (transcribeOverheard || voice)
           && onOverheardTranscript
           && !activeOverheardAbort
-          && !isWearerVoiceBusy()
           && (Boolean(irlListenSession) || getG2HardwarePreferences().irlOverheardEnabled)
         ) {
           if (!overheardUtterance) overheardUtterance = new Utterance(8)

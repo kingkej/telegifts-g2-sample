@@ -373,8 +373,7 @@ function answerGiftiQuery(
         && /\b(best|top|highest|any|find|scan|good|most expensive|priciest|blue[- ]?chip|market|overview|summary|pulse|mover|movers|gainer|gainers|trending|loser|losers|dip|dipped|what changed|fee|fees|cheap|under|budget)\b/.test(qLower)))
   ) {
     return buildFreeDemoGiftiReply(rawQuery, focusedCollection, catalog, {
-      consumeFreeTurn: false,
-      includeQuotaTag: false,
+      includeModeTag: false,
     })
   }
 
@@ -1528,7 +1527,7 @@ export function createCollectorToolbox(
     publish({
       key: 'tools',
       title: 'Collector Copilot',
-      lines: [col ? `Focused: ${col}` : 'Morning brief, Gifti AI copilot, net arbitrage research, watchlist & watches.'],
+      lines: [col ? `Focused: ${col}` : 'Morning brief, Gifti analyst, net arbitrage research, watchlist & watches.'],
       actions: entries,
     })
   }

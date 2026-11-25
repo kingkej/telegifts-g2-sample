@@ -464,27 +464,29 @@ export async function hostHttpFetch(input: RequestInfo | URL, init?: RequestInit
   if (pathname === '/api/v1/api/price_profile') {
     const username = url.searchParams.get('username') ?? ''
     if (!username.trim()) return jsonResponse({ error: 'Missing portfolio username' }, 400)
-    const payload = await resolveUserPortfolioPayload(
+    const result = await resolveUserPortfolioPayload(
       username,
       url.searchParams.get('offset'),
       url.searchParams.get('limit'),
       'swift',
       catalog,
     )
-    return jsonResponse(payload)
+    if (!result.ok) return jsonResponse({ error: result.error }, result.status)
+    return jsonResponse(result.payload)
   }
 
   if (pathname === '/api/a/api/v1/gifts/get_user_profile_price') {
     const username = url.searchParams.get('username') ?? ''
     if (!username.trim()) return jsonResponse({ error: 'Missing portfolio username' }, 400)
-    const payload = await resolveUserPortfolioPayload(
+    const result = await resolveUserPortfolioPayload(
       username,
       url.searchParams.get('offset'),
       url.searchParams.get('limit'),
       'legacy',
       catalog,
     )
-    return jsonResponse(payload)
+    if (!result.ok) return jsonResponse({ error: result.error }, result.status)
+    return jsonResponse(result.payload)
   }
 
   if (pathname === '/api/v1/api/floors/resolve') {
@@ -1219,13 +1221,13 @@ export function HostTelegramSheetsView({
                       const bridge = (globalThis as {
                         window?: {
                           EvenAppBridge?: {
-                            pickImageFromAlbum?(opts?: unknown): Promise<unknown>
+                            pickImageFromAlbum?(): Promise<unknown>
                           }
                         }
                       }).window?.EvenAppBridge
                       if (typeof bridge?.pickImageFromAlbum === 'function') {
                         void bridge
-                          .pickImageFromAlbum({ maxWidth: 512, quality: 80 })
+                          .pickImageFromAlbum()
                           .then(picked => {
                             if (!picked) {
                               setGiftLinkStatus('Album picker canceled.')
@@ -1246,7 +1248,7 @@ export function HostTelegramSheetsView({
                             const res = stem ? (hostGiftLinkOpener?.(stem) ?? null) : null
                             if (res) {
                               setGiftLinkInput(`https://t.me/nft/${res.rawSlug}`)
-                              setGiftLinkStatus(`Scanned ${res.collection} from album and beamed spread to G2.`)
+                              setGiftLinkStatus(`Matched ${res.collection} from album filename and beamed spread to G2.`)
                             } else {
                               setGiftLinkStatus('Image selected — filename had no recognized gift name; enter slug above.')
                             }
@@ -1272,7 +1274,7 @@ export function HostTelegramSheetsView({
                       }
                     },
                   },
-                  'Scan Gift Image',
+                  'Pick Image (Filename)',
                 ),
               ),
             ),
@@ -1281,7 +1283,7 @@ export function HostTelegramSheetsView({
             kit.PanelGroup,
             { caption: 'Even G2 Hardware Controls (SDK 0.0.16)' },
             createElement(kit.ListRow, {
-              title: 'IMU Head-Nod Alert Triage',
+              title: 'IMU Head-Nod Alert Triage (Experimental)',
               subtitle: 'Nod: 1-Tap Smart Reply · Shake: Dismiss on live /ask & watch alerts',
               divider: true,
               trailing: createElement(
@@ -1342,8 +1344,8 @@ export function HostTelegramSheetsView({
             kit.PanelGroup,
             {
               caption: giftiSnap.hasEphemeralKey
-                ? `Gifti AI: 1-Time ${giftiSnap.provider?.toUpperCase()} Token (RAM-Only)`
-                : `Gifti AI Demo: ${giftiSnap.freeTurnsRemaining}/${giftiSnap.freeTurnsTotal} Free Messages`,
+                ? `Gifti Live LLM: ${giftiSnap.provider?.toUpperCase()} (1-Time RAM-Only)`
+                : 'Offline Gifti Analyst (Rule-Based · Unlimited)',
               padded: true,
             },
             createElement(
@@ -1352,7 +1354,7 @@ export function HostTelegramSheetsView({
               createElement(kit.Input, {
                 type: 'password',
                 value: ephemeralKeyInput,
-                placeholder: 'Optional 1-time sk-... / AIza... / gsk_... (never saved)',
+                placeholder: 'Optional 1-time sk-... / AIza... / gsk_... for live LLM (RAM-only)',
                 onChange: e => setEphemeralKeyInput(e.target.value),
               }),
               createElement(
@@ -1365,9 +1367,16 @@ export function HostTelegramSheetsView({
                     variant: 'primary',
                     onClick: () => {
                       if (!ephemeralKeyInput.trim()) return
-                      setEphemeralAiToken(ephemeralKeyInput)
-                      setEphemeralKeyInput('')
-                      setGiftLinkStatus('Applied 1-time AI token in JS memory only (cleared on reload).')
+                      const ok = setEphemeralAiToken(ephemeralKeyInput)
+                      if (ok) {
+                        setEphemeralKeyInput('')
+                        setGiftLinkStatus('Applied 1-time LLM token in JS memory only (cleared on reload).')
+                      } else {
+                        setGiftLinkStatus(
+                          getGiftiSessionSnapshot().error
+                            ?? 'Unrecognized key prefix — use sk-... (OpenAI), AIza... (Gemini), or gsk_... (Groq).',
+                        )
+                      }
                     },
                   },
                   'Use 1-Time Key',

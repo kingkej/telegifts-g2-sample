@@ -74,6 +74,7 @@ export function buildHudContainers(opts: {
       }),
     ]
     if (regions.header) {
+      const singleLineHeader = regions.header.replace(/\s*\n+\s*/g, ' · ').trim()
       textObject.push(
         new TextContainerProperty({
           ...target.header,
@@ -85,7 +86,7 @@ export function buildHudContainers(opts: {
           isEventCapture: 0,
           zOrderIndex: 1,
           textColor: 2,
-          content: fitNativeText(regions.header, 240),
+          content: fitNativeText(singleLineHeader, 72),
         }),
       )
     }
@@ -101,7 +102,7 @@ export function buildHudContainers(opts: {
           isEventCapture: 0,
           zOrderIndex: 3,
           textColor: 3,
-          content: fitNativeText(regions.footer, 240),
+          content: fitNativeText(regions.footer, 140),
         }),
       )
     }
