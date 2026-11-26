@@ -8,9 +8,13 @@ TeleGifts G2 brings Telegram Gift collectibles, cross-venue floor analytics, and
 
 ![TeleGifts G2 Interactive Hardware & Voice Studio](./docs/studio-hero.jpg)
 
-| 5-Venue Spread Chart & Candlestick History | Gifti Cross-Venue Arbitrage Analyst | Live `/ask` SSE Interrupt & IMU Head-Nod |
+| 5-Venue Spread Bar Chart (`256×144`) | Gifti Cross-Venue Arbitrage Analyst | Answer-First Triage (`P1 · FAV · URGENT`) |
 | --- | --- | --- |
-| ![5-Venue Spread](./docs/studio-spread.jpg) | ![Gifti Analyst](./docs/studio-gifti.jpg) | ![IMU Head-Nod Triage](./docs/studio-imu.jpg) |
+| ![5-Venue Spread](./docs/studio-spread.jpg) | ![Gifti Analyst](./docs/studio-gifti.jpg) | ![P1 Triage & IMU Alert](./docs/studio-imu.jpg) |
+
+| 1-Screen `Pending` Quiet Summary | Intent-Ranked Smart Reply (`· SEEN`) | Demo Clip (Telegram Chart Reply Loop) |
+| --- | --- | --- |
+| ![Pending Triage Summary](./docs/studio-pending.jpg) | ![Smart Reply Composer](./docs/studio-compose.jpg) | **[Watch `demo/telegram-chart-reply.mp4`](./demo/telegram-chart-reply.mp4)** · **[Try Live Interactive Studio](https://kingkej.github.io/telegifts-g2-sample/)** |
 
 ---
 
