@@ -5,7 +5,8 @@
 - **Bonus / Cross-Track Category:** `Best Telegram Integration`
 - **Target Hardware & SDK:** Even Realities G2 (`576 × 288`, 4-bit optical waveguide) + Even R1 Ring · `@evenrealities/even_hub_sdk@0.0.16`
 - **Live Interactive Studio:** https://kingkej.github.io/telegifts-g2-sample/
-- **Demo Clip:** [demo/telegram-chart-reply.mp4](./demo/telegram-chart-reply.mp4)
+- **Full Narrated Split-Screen Demo (`01:59`, 1080p, Live Telegram):** [demo/telegifts-g2-demo.mp4](./demo/telegifts-g2-demo.mp4)
+- **Live Telegram Loop Highlight (`00:37`, 1080p):** [demo/telegram-live-loop.mp4](./demo/telegram-live-loop.mp4)
 
 ---
 

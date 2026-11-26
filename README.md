@@ -3,7 +3,7 @@
 TeleGifts G2 brings Telegram Gift collectibles, cross-venue floor analytics, and 1-tap moderator replies onto the **Even Realities G2** (`576 × 288` 4-bit optical waveguide) and **Even R1 Ring**. A collector posts `/ask` in a Telegram group, a heads-up alert appears on the G2 lens, and you reply with a grounded 7-day chart or 5-venue spread PNG in one tap or voice command. Built for the **[Heads Up: Even Realities Hackathon](https://dorahacks.io/hackathon/even-realities/detail)** (`Track 01 — Messaging & News` · `Best Telegram Integration`).
 
 - **Live Interactive G2 Studio (GitHub Pages):** https://kingkej.github.io/telegifts-g2-sample/ *(desktop browser ≥920px, zero API keys required)*
-- **Demo Clip (Telegram Chart Reply Loop):** [demo/telegram-chart-reply.mp4](./demo/telegram-chart-reply.mp4)
+- **Full Narrated Split-Screen Demo (`01:59`, 1080p, Live Telegram):** [demo/telegifts-g2-demo.mp4](./demo/telegifts-g2-demo.mp4) · **Live Loop Highlight (`00:37`):** [demo/telegram-live-loop.mp4](./demo/telegram-live-loop.mp4)
 - **Full Submission Brief:** [SUBMISSION.md](./SUBMISSION.md)
 
 ![TeleGifts G2 Interactive Hardware & Voice Studio](./docs/studio-hero.jpg)
@@ -12,9 +12,9 @@ TeleGifts G2 brings Telegram Gift collectibles, cross-venue floor analytics, and
 | --- | --- | --- |
 | ![5-Venue Spread](./docs/studio-spread.jpg) | ![Gifti Analyst](./docs/studio-gifti.jpg) | ![P1 Triage & IMU Alert](./docs/studio-imu.jpg) |
 
-| 1-Screen `Pending` Quiet Summary | Intent-Ranked Smart Reply (`· SEEN`) | Demo Clip (Telegram Chart Reply Loop) |
+| 1-Screen `Pending` Quiet Summary | Intent-Ranked Smart Reply (`· SEEN`) | Full HQ Narrated Demo (Live Telegram) |
 | --- | --- | --- |
-| ![Pending Triage Summary](./docs/studio-pending.jpg) | ![Smart Reply Composer](./docs/studio-compose.jpg) | **[Watch `demo/telegram-chart-reply.mp4`](./demo/telegram-chart-reply.mp4)** · **[Try Live Interactive Studio](https://kingkej.github.io/telegifts-g2-sample/)** |
+| ![Pending Triage Summary](./docs/studio-pending.jpg) | ![Smart Reply Composer](./docs/studio-compose.jpg) | **[Watch Full Demo `01:59`](./demo/telegifts-g2-demo.mp4)** · **[Live Loop `00:37`](./demo/telegram-live-loop.mp4)** · **[Try Live Studio](https://kingkej.github.io/telegifts-g2-sample/)** |
 
 ---
 
@@ -134,5 +134,5 @@ Per the **Heads Up: Even Realities Hackathon** rules:
 | **Companion Bridge & Judge Studio** | Lived outside this repo | `@telegifts/host-bridge` (`phoneHostBridge.ts`), public TonAPI wallet & `.t.me` portfolio lookup (`tonPortfolio.ts`), GitHub Pages G2 Optical Waveguide Studio (`studioShell.ts`, `browserEvenBridge.ts`), and offline rule-based Gifti analyst + 1-time RAM-only LLM bridge (`giftiAiBridge.ts`) |
 | **G2 Spatial HUD & Hardware Hooks** | Single text container + single image slot | 3-region brightness-graded multi-container HUD (`hudLayout.ts`), experimental power-gated IMU triage (`imuGestureTriage.ts`), bounded 12s IRL overheard lookup, `glassesMenu` Morning Brief launch, host storage sync (`evenHostStorage.ts`), and `t.me/nft/...` quick-beam |
 | **Visual Inspection** | `256 × 144` floor chart, 3D relief/cup preview, model browser | New `256 × 144` 16-shade 5-venue Spread Bar Chart (`src/spreadChart.ts`) and shaded floor plots |
-| **Telegram Integration** | Topic-aware chart/comparison confirm & result screens | Standalone `TelegramCompanionStore`, SSE `/g2/telegram/events` push + `LIVE /ASK` interrupt, 1-tap Smart Reply composer (`sendPhoto` 7d + spread PNGs + inline buttons), R1 Ring PTT draft picker, Channel & Watch Digest, and self-hosted `server/telegramRelay.mjs` |
+| **Telegram Integration** | Topic-aware chart/comparison confirm & result screens | Standalone `TelegramCompanionStore`, Answer-First P1/P2/P3 triage (`questionTriage.ts`) & 1-screen `Pending` summary, SSE `/g2/telegram/events` push + `LIVE /ASK` interrupt, Live Loop `👀`/`👍` reactions & topic typing (`/g2/telegram/ack`), intent-ranked 1-tap Smart Reply composer (`sendPhoto` 7d + spread PNGs + inline buttons), R1 Ring PTT Dictate-or-Draft composer (number-grounded, Tap-to-send), Inline Mode (`@bot <gift>`), reply-to-bot follow-ups, Channel & Watch Digest, atomic `RELAY_STATE_FILE` persistence, and self-hosted `server/telegramRelay.mjs` |
 | **Collector Copilot & Ticker** | Offline SoundSwallower JSGF recognizer + external tool adapters | 9-tool `createCollectorToolbox` (`collectorTools.ts`), live zero-key CoinGecko TON/USDT ticker (`liveTicker.ts`), and expanded JSGF + overheard grammars |
