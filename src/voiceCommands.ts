@@ -31,6 +31,7 @@ export type VoiceCommand =
   | { kind: View | 'save'; name: string | null; range?: CompanionChartRange }
   | { kind: 'share'; target: TelegramShareTarget }
   | { kind: 'telegram-inbox' }
+  | { kind: 'telegram-pending' }
   | { kind: 'telegram-digest' }
   | { kind: 'tool'; target: (typeof toolPhrases)[keyof typeof toolPhrases] }
   | { kind: 'favorites' }
@@ -102,6 +103,9 @@ export function resolveVoiceCommand(
   if (/^(?:go )?back$/.test(speech)) return action({ kind: 'back' }, 'Go back')
   if (/^(?:open|show) (?:(?:the|my) )?(?:inbox|questions)$/.test(speech)) {
     return action({ kind: 'telegram-inbox' }, 'Open Questions')
+  }
+  if (/^(?:(?:open|show) (?:(?:the|my) )?)?pending(?: (?:questions|threads|summary))?$/.test(speech)) {
+    return action({ kind: 'telegram-pending' }, 'Open Pending summary')
   }
   if (/^show (?:(?:the|my) )?(?:channel )?digest$/.test(speech)) {
     return action({ kind: 'telegram-digest' }, 'Open Channel digest')

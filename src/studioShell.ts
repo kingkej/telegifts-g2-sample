@@ -13,6 +13,8 @@ export interface StudioShellBindings {
   voice: CompanionVoiceControl
   runVoicePhrase(phrase: string): void
   triggerLiveAsk(): void
+  triggerBurstAsks?(): { queuedSilent: number; interrupted: unknown } | null
+  openPending?(): void
   askGiftiText(prompt: string): Promise<void>
   startGiftiVoice(): void
   startIrlListen(): boolean
@@ -152,6 +154,8 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
         <button type="button" class="tg-btn" id="btnImuNod" title="Experimental IMU triage (simulated in Studio)">🙂 IMU Nod (Exp.)</button>
         <button type="button" class="tg-btn" id="btnImuShake" title="Experimental IMU triage (simulated in Studio)">↔️ IMU Shake (Exp.)</button>
         <button type="button" class="tg-btn tg-btn--primary" id="btnLiveAsk">⚡ + Live /ask Alert</button>
+        <button type="button" class="tg-btn" id="btnBurstAsks" title="Inject 3 questions (P3 chatter, P2 spread, P1 favorite) to test priority triage">⚡×3 Burst /asks</button>
+        <button type="button" class="tg-btn" id="btnPendingSummary" title="Open 1-screen P1/P2/P3 quiet thread summary">📋 Pending</button>
       </div>
     </div>
 
@@ -451,6 +455,19 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
     bindings.triggerLiveAsk()
     statusLine.textContent = 'Triggered LIVE /ASK interrupt — try 🙂 IMU Head Nod or ● Tap!'
   }
+  document.getElementById('btnBurstAsks')!.onclick = () => {
+    const res = bindings.triggerBurstAsks?.()
+    if (res) {
+      statusLine.textContent = `3-ask triage burst: ${res.queuedSilent} queued silently, P1 favorite interrupted lens — click 📋 Pending to inspect.`
+    } else {
+      bindings.triggerLiveAsk()
+      statusLine.textContent = 'Triggered LIVE /ASK interrupt.'
+    }
+  }
+  document.getElementById('btnPendingSummary')!.onclick = () => {
+    bindings.openPending?.()
+    statusLine.textContent = 'Opened 1-screen Pending Triage Summary (Tap to reply to top P1, Swipe to open full queue).'
+  }
 
   const ringBtn = document.getElementById('btnRingHold')!
   let ringHeld = false
@@ -460,6 +477,10 @@ export function bindJudgeStudioControls(bindings: StudioShellBindings): () => vo
     ringBtn.classList.add('tg-btn--recording')
     bindings.sim.setSpeakerRole('wearer')
     bindings.sim.holdStart('RING')
+    const hasKey = getGiftiSessionSnapshot().hasEphemeralKey
+    statusLine.textContent = hasKey
+      ? 'R1 Ring PTT active — dictate a free-form reply (Tap to send) or say "next draft", then release.'
+      : 'Offline: Hold R1 picks drafts (paste a 1-time LLM key below for free-form voice dictation).'
   }
   const endRing = () => {
     if (!ringHeld) return

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import net from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 import { createTelegramRelayServer } from '../server/telegramRelay.mjs'
 import { getBundledCatalog, buildBundledFloorSeries } from '../src/services/bundledMarketData.ts'
@@ -11,18 +14,22 @@ import {
 } from '../src/services/telegramStore.ts'
 
 async function startTestRelay(options) {
-  const relay = createTelegramRelayServer({ port: 0, host: '127.0.0.1', ...options })
+  const relay = createTelegramRelayServer({ port: 0, host: '127.0.0.1', reactions: false, ...options })
   await new Promise(resolve => relay.server.listen(0, '127.0.0.1', resolve))
   const addr = relay.server.address()
   const baseUrl = `http://127.0.0.1:${addr.port}`
+  let closed = false
   return {
     relay,
     baseUrl,
-    close: () =>
-      new Promise(resolve => {
+    close: () => {
+      if (closed) return Promise.resolve()
+      closed = true
+      return new Promise(resolve => {
         relay.stopPolling()
         relay.server.close(() => resolve())
-      }),
+      })
+    },
   }
 }
 
@@ -1251,4 +1258,340 @@ test('telegramRelay re-polls immediately after a successful getUpdates call and 
   const errorBackoffMs = callTimestamps[2] - callTimestamps[1]
   assert.ok(successGapMs < 300, `Expected immediate re-poll on success, got ${successGapMs}ms`)
   assert.ok(errorBackoffMs >= 900, `Expected error backoff (~1200ms), got ${errorBackoffMs}ms`)
+})
+
+test('Telegram Live Loop: /ack sends 👀 + chat action with dedupe, 👍 fires only after sent without altering receipts, follow-ups & setMyCommands work', async t => {
+  const calls = []
+  let failReaction = false
+  let failSend = false
+
+  const { relay, baseUrl, close } = await startTestRelay({
+    botToken: 'live-loop-token',
+    botUsername: 'telegifts_live_bot',
+    reactions: true,
+    initialState: {
+      privateChat: { id: '1001', label: '@collector' },
+      group: { id: '-2002', label: 'TON Gift Alpha' },
+      questions: [
+        {
+          id: '-2002:77',
+          chatId: '-2002',
+          messageId: 77,
+          topicId: 14,
+          topicName: 'Topic #14',
+          sender: '@mira',
+          chatLabel: 'TON Gift Alpha',
+          text: 'Is Plush Pepe cheaper on Portals?',
+        },
+        {
+          id: '-2002:78',
+          chatId: '-2002',
+          messageId: 78,
+          topicId: 14,
+          topicName: 'Topic #14',
+          sender: '@kairo',
+          chatLabel: 'TON Gift Alpha',
+          text: 'Astral Shard floor?',
+        },
+      ],
+    },
+    callTelegram: async (method, payload) => {
+      calls.push({ method, payload })
+      if (method === 'setMessageReaction' && failReaction) {
+        throw new Error('REACTION_INVALID')
+      }
+      if (method === 'sendMessage' && failSend) {
+        const err = new Error('Bad Request: chat not found')
+        err.isDefinitiveTelegramError = true
+        err.telegramDescription = 'Bad Request: chat not found'
+        throw err
+      }
+      return { ok: true }
+    },
+  })
+  t.after(close)
+
+  // 1. Foreign destinationId and unknown questionId are rejected without calling Telegram
+  const badDest = await fetch(`${baseUrl}/g2/telegram/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ questionId: '-2002:77', destinationId: '-9999', chartKind: 'spread' }),
+  })
+  assert.equal(badDest.status, 404)
+  const badQ = await fetch(`${baseUrl}/g2/telegram/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ questionId: '-2002:999', destinationId: '-2002', chartKind: 'none' }),
+  })
+  assert.equal(badQ.status, 404)
+  assert.equal(calls.length, 0)
+
+  // 2. Valid /ack sends 👀 + upload_photo with message_thread_id, and second /ack dedupes 👀
+  const ack1 = await fetch(`${baseUrl}/g2/telegram/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ questionId: '-2002:77', destinationId: '-2002', chartKind: 'spread' }),
+  })
+  assert.equal(ack1.status, 200)
+  assert.deepEqual(await ack1.json(), { ok: true, reaction: 'set' })
+  assert.equal(calls.filter(c => c.method === 'setMessageReaction').length, 1)
+  assert.equal(calls[0].payload.reaction[0].emoji, '👀')
+  assert.equal(calls[1].method, 'sendChatAction')
+  assert.equal(calls[1].payload.action, 'upload_photo')
+  assert.equal(calls[1].payload.message_thread_id, 14)
+
+  const ack2 = await fetch(`${baseUrl}/g2/telegram/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ questionId: '-2002:77', destinationId: '-2002', chartKind: 'none' }),
+  })
+  assert.equal(ack2.status, 200)
+  assert.equal(calls.filter(c => c.method === 'setMessageReaction').length, 1, 'Second /ack must not duplicate 👀 reaction')
+  assert.equal(calls.at(-1).method, 'sendChatAction')
+  assert.equal(calls.at(-1).payload.action, 'typing')
+
+  // 3. Failed reply does NOT fire 👍 reaction
+  failSend = true
+  const failedReply = await fetch(`${baseUrl}/g2/telegram/reply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requestId: 'req-fail-no-thumb',
+      destinationId: '-2002',
+      questionId: '-2002:78',
+      text: 'Astral Shard snapshot floor.',
+    }),
+  })
+  assert.equal((await failedReply.json()).status, 'failed')
+  assert.equal(calls.filter(c => c.method === 'setMessageReaction' && c.payload.reaction[0].emoji === '👍').length, 0)
+
+  // 4. Successful reply fires 👍 OUTSIDE executeIdempotent, and a failing reaction NEVER changes the 'sent' receipt
+  failSend = false
+  failReaction = true
+  const okReply = await fetch(`${baseUrl}/g2/telegram/reply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requestId: 'req-ok-thumb-fail',
+      destinationId: '-2002',
+      questionId: '-2002:77',
+      text: 'Plush Pepe Portals 4,820 GRAM (snapshot).',
+    }),
+  })
+  assert.deepEqual(await okReply.json(), { status: 'sent' })
+  assert.equal(calls.filter(c => c.method === 'setMessageReaction' && c.payload.reaction[0].emoji === '👍').length, 1)
+  const deliveryRes = await fetch(`${baseUrl}/g2/telegram/delivery/req-ok-thumb-fail`)
+  assert.deepEqual(await deliveryRes.json(), { status: 'sent' })
+
+  // 5. Reply-to-bot follow-up in paired group is captured with isFollowUp & contextText; non-paired group is ignored
+  relay.ingestTelegramUpdates([
+    {
+      update_id: 201,
+      message: {
+        message_id: 90,
+        chat: { id: -2002, type: 'supergroup', title: 'TON Gift Alpha' },
+        message_thread_id: 14,
+        from: { username: 'mira' },
+        text: 'And what about Tonnel?',
+        reply_to_message: {
+          message_id: 89,
+          from: { is_bot: true, username: 'telegifts_live_bot' },
+          caption: 'Plush Pepe Portals 4,820 GRAM (snapshot).',
+        },
+      },
+    },
+    {
+      update_id: 202,
+      message: {
+        message_id: 91,
+        chat: { id: -9999, type: 'supergroup', title: 'Foreign Group' },
+        from: { username: 'stranger' },
+        text: 'Should be ignored',
+        reply_to_message: {
+          message_id: 88,
+          from: { is_bot: true, username: 'telegifts_live_bot' },
+          text: 'Plush Pepe',
+        },
+      },
+    },
+  ])
+  const followUp = relay.state.questions.find(q => q.id === '-2002:90')
+  assert.ok(followUp, 'Reply to bot in paired group must be captured as a follow-up question')
+  assert.equal(followUp.isFollowUp, true)
+  assert.match(followUp.contextText, /Plush Pepe/)
+  assert.equal(relay.state.questions.some(q => q.id === '-9999:91'), false)
+
+  // 6. startPolling registers /ask via setMyCommands
+  relay.startPolling()
+  await new Promise(r => setTimeout(r, 20))
+  relay.stopPolling()
+  const cmdCall = calls.find(c => c.method === 'setMyCommands')
+  assert.ok(cmdCall, 'startPolling must register bot commands via setMyCommands')
+  assert.equal(cmdCall.payload.commands[0].command, 'ask')
+})
+
+test('Inline Mode answers inline_query with <=5 snapshot cards, valid IDs, no reply_markup, and empty list on unknown query', async t => {
+  const answered = []
+  const { relay, close } = await startTestRelay({
+    botToken: 'inline-token',
+    botUsername: 'telegifts_inline_bot',
+    callTelegram: async (method, payload) => {
+      if (method === 'answerInlineQuery') answered.push(payload)
+      return { ok: true }
+    },
+  })
+  t.after(close)
+
+  relay.ingestTelegramUpdates([
+    { update_id: 301, inline_query: { id: 'iq-plush', query: 'plush', from: { id: 1 } } },
+    { update_id: 302, inline_query: { id: 'iq-empty', query: '', from: { id: 1 } } },
+    { update_id: 303, inline_query: { id: 'iq-unknown', query: 'zzz_nonexistent_gift_xyz', from: { id: 1 } } },
+    { update_id: 304, inline_query: { id: 'iq-signet', query: 'signet', from: { id: 1 } } },
+  ])
+  await new Promise(r => setTimeout(r, 30))
+
+  assert.equal(answered.length, 4)
+
+  const plushAns = answered.find(a => a.inline_query_id === 'iq-plush')
+  assert.ok(plushAns.results.length >= 1 && plushAns.results.length <= 5)
+  for (const r of plushAns.results) {
+    assert.equal(r.type, 'article')
+    assert.ok(Buffer.byteLength(r.id, 'utf8') <= 64)
+    assert.equal(r.reply_markup, undefined)
+    assert.match(r.input_message_content.message_text, /\(snapshot\)/i)
+  }
+  assert.match(plushAns.results[0].title, /Plush Pepe/)
+
+  // P1-3 regression: ambiguous substring query ("signet") MUST price each card for its OWN collection, never cross-contaminating
+  const signetAns = answered.find(a => a.inline_query_id === 'iq-signet')
+  assert.ok(signetAns.results.length >= 2, 'Expected multiple signet collections')
+  for (const card of signetAns.results) {
+    const colName = card.title.split(' · ')[0]
+    assert.equal(
+      card.input_message_content.message_text.startsWith(colName),
+      true,
+      `Card "${card.title}" posted wrong collection text: "${card.input_message_content.message_text}"`,
+    )
+  }
+
+  const emptyAns = answered.find(a => a.inline_query_id === 'iq-empty')
+  assert.equal(emptyAns.results.length, 5)
+
+  const unknownAns = answered.find(a => a.inline_query_id === 'iq-unknown')
+  assert.deepEqual(unknownAns.results, [])
+})
+
+test('Relay state persistence restores pairing/questions/offset across restart, skips secrets/receipts, and tolerates corrupt JSON', async t => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'telegifts-relay-state-'))
+  const stateFile = path.join(tmpDir, 'relay-state.json')
+  t.after(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  // 1. Start relay #1, mutate state, send a reply (creates receipt), flush & close
+  const relay1 = await startTestRelay({
+    botToken: 'super-secret-bot-token-xyz',
+    botUsername: 'telegifts_persist_bot',
+    stateFile,
+    initialState: {
+      privateChat: { id: '1001', label: '@collector' },
+      group: { id: '-2002', label: 'TON Gift Alpha' },
+    },
+    callTelegram: async () => ({ ok: true }),
+  })
+  t.after(relay1.close)
+  relay1.relay.state.pendingTokens.set('pair_private_secret123', {
+    kind: 'private',
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  })
+  relay1.relay.ingestTelegramUpdates([
+    {
+      update_id: 500,
+      message: {
+        message_id: 12,
+        chat: { id: -2002, type: 'supergroup', title: 'TON Gift Alpha' },
+        from: { username: 'alice' },
+        text: '/ask Plush Pepe floor?',
+      },
+    },
+  ])
+  await fetch(`${relay1.baseUrl}/g2/telegram/reply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requestId: 'req-persist-check', text: 'DM check' }),
+  })
+  relay1.relay.flushPersistedStateNow()
+  await relay1.close()
+
+  // Verify raw file on disk contains no secrets, pendingTokens, or receipts
+  const rawDisk = fs.readFileSync(stateFile, 'utf8')
+  assert.equal(rawDisk.includes('super-secret-bot-token-xyz'), false)
+  assert.equal(rawDisk.includes('pair_private_secret123'), false)
+  assert.equal(rawDisk.includes('req-persist-check'), false)
+  const parsed = JSON.parse(rawDisk)
+  assert.equal(parsed.updateOffset, 501)
+  assert.equal(parsed.group.id, '-2002')
+  assert.equal(parsed.questions.length, 1)
+
+  // 2. Restart relay #2 pointing at the same stateFile -> restores pairing, questions, and updateOffset
+  const relay2 = await startTestRelay({
+    botToken: 'super-secret-bot-token-xyz',
+    botUsername: 'telegifts_persist_bot',
+    stateFile,
+    callTelegram: async () => ({ ok: true }),
+  })
+  t.after(relay2.close)
+  assert.equal(relay2.relay.state.privateChat?.id, '1001')
+  assert.equal(relay2.relay.state.group?.id, '-2002')
+  assert.equal(relay2.relay.state.updateOffset, 501)
+  assert.equal(relay2.relay.state.questions[0]?.id, '-2002:12')
+  assert.equal(relay2.relay.state.receipts.size, 0)
+  assert.equal(relay2.relay.state.pendingTokens.size, 0)
+
+  // 3. Corrupt JSON file warns and starts cleanly without throwing
+  const corruptFile = path.join(tmpDir, 'corrupt.json')
+  fs.writeFileSync(corruptFile, '{not valid json!!!', 'utf8')
+  const warnMock = t.mock.method(console, 'warn', () => {})
+  const relay3 = await startTestRelay({
+    botToken: 'tok',
+    botUsername: 'bot',
+    stateFile: corruptFile,
+    callTelegram: async () => ({ ok: true }),
+  })
+  t.after(relay3.close)
+  assert.equal(relay3.relay.state.group, null)
+  assert.equal(warnMock.mock.callCount() >= 1, true)
+
+  // 4. Malformed null/incomplete entries in persisted questions are filtered out cleanly
+  const partialFile = path.join(tmpDir, 'partial.json')
+  fs.writeFileSync(
+    partialFile,
+    JSON.stringify({
+      privateChat: { id: '1001', label: '@collector' },
+      group: { id: '-2002', label: 'Group' },
+      questions: [
+        null,
+        { id: 'bad-no-msgid', chatId: '-2002', text: 'broken' },
+        { id: '-2002:99', chatId: '-2002', messageId: 99, text: 'Valid persisted ask' },
+      ],
+      digest: [null, { id: 'd1', channel: '@ch', headline: 'H', summary: 'S' }],
+      updateOffset: 42,
+    }),
+    'utf8',
+  )
+  const relay4 = await startTestRelay({
+    botToken: 'tok',
+    botUsername: 'bot',
+    stateFile: partialFile,
+    callTelegram: async () => ({ ok: true }),
+  })
+  t.after(relay4.close)
+  assert.equal(relay4.relay.state.questions.length, 1)
+  assert.equal(relay4.relay.state.questions[0].id, '-2002:99')
+  assert.equal(relay4.relay.state.questions[0].sender, 'Member')
+  assert.equal(relay4.relay.state.questions[0].chatLabel, 'Group')
+  assert.equal(relay4.relay.state.digest.length, 1)
+  assert.equal(relay4.relay.state.digest[0].timestamp, 'Saved')
+  const stateRes = await fetch(`${relay4.baseUrl}/g2/telegram/state`)
+  assert.equal(stateRes.status, 200)
 })

@@ -1,4 +1,5 @@
 import type { CollectionFloorsResponse } from '../contracts/companion.ts'
+import type { TelegramQuestion, TelegramSmartDraft } from '../contracts/telegram.ts'
 import { resolveDeepLinkMatchKey } from '../lib/deepLinkMatchKey.ts'
 import { formatCompanionPrice, formatMarketChange } from '../lib/format.ts'
 import {
@@ -156,6 +157,95 @@ function blobToBase64(blob: Blob): Promise<string> {
   })
 }
 
+export async function transcribeFreeformWithEphemeralAi(
+  pcm: Uint8Array<ArrayBuffer>,
+  signal: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ text: string; provider: EphemeralAiProvider } | null> {
+  signal.throwIfAborted()
+  const key = ephemeralApiKey
+  const provider = ephemeralProvider
+  if (!key || !provider) return null
+
+  try {
+    const wav = pcm16ToWavBlob(pcm)
+    if (provider === 'openai' || provider === 'groq') {
+      const endpoint =
+        provider === 'groq'
+          ? 'https://api.groq.com/openai/v1/audio/transcriptions'
+          : 'https://api.openai.com/v1/audio/transcriptions'
+      const form = new FormData()
+      form.append('file', wav, 'speech.wav')
+      form.append(
+        'model',
+        provider === 'groq'
+          ? configuredModel('VITE_GROQ_WHISPER_MODEL', 'whisper-large-v3-turbo')
+          : configuredModel('VITE_OPENAI_WHISPER_MODEL', 'whisper-1'),
+      )
+      form.append('language', 'en')
+      const res = await fetchImpl(endpoint, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}` },
+        body: form,
+        signal,
+      })
+      if (res.ok) {
+        const data = (await res.json()) as { text?: string }
+        if (data.text?.trim()) {
+          lastTranscript = data.text.trim()
+          emitSession()
+          return { text: lastTranscript, provider }
+        }
+      }
+    } else if (provider === 'gemini') {
+      const b64 = await blobToBase64(wav)
+      const geminiModel = configuredModel('VITE_GEMINI_MODEL', 'gemini-2.5-flash')
+      const res = await fetchImpl(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': key,
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  { text: 'Transcribe this spoken English message about Telegram Collectible Gifts verbatim. Output only the spoken words.' },
+                  { inlineData: { mimeType: 'audio/wav', data: b64 } },
+                ],
+              },
+            ],
+            generationConfig: {
+              temperature: 0,
+              maxOutputTokens: 120,
+              thinkingConfig: { thinkingBudget: 0 },
+            },
+          }),
+          signal,
+        },
+      )
+      if (res.ok) {
+        const data = (await res.json()) as {
+          candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
+        }
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
+        if (text) {
+          lastTranscript = text
+          emitSession()
+          return { text, provider }
+        }
+      }
+    }
+  } catch (err) {
+    if (signal.aborted) throw err
+    lastError = 'Token audio transcription failed.'
+    emitSession()
+  }
+  return null
+}
+
 export async function transcribeWithEphemeralAiOrFallback(
   pcm: Uint8Array<ArrayBuffer>,
   signal: AbortSignal,
@@ -164,87 +254,8 @@ export async function transcribeWithEphemeralAiOrFallback(
   fetchImpl: typeof fetch = fetch,
 ): Promise<string | null> {
   signal.throwIfAborted()
-  const key = ephemeralApiKey
-  const provider = ephemeralProvider
-
-  if (key && provider) {
-    try {
-      const wav = pcm16ToWavBlob(pcm)
-      if (provider === 'openai' || provider === 'groq') {
-        const endpoint =
-          provider === 'groq'
-            ? 'https://api.groq.com/openai/v1/audio/transcriptions'
-            : 'https://api.openai.com/v1/audio/transcriptions'
-        const form = new FormData()
-        form.append('file', wav, 'speech.wav')
-        form.append(
-          'model',
-          provider === 'groq'
-            ? configuredModel('VITE_GROQ_WHISPER_MODEL', 'whisper-large-v3-turbo')
-            : configuredModel('VITE_OPENAI_WHISPER_MODEL', 'whisper-1'),
-        )
-        form.append('language', 'en')
-        const res = await fetchImpl(endpoint, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${key}` },
-          body: form,
-          signal,
-        })
-        if (res.ok) {
-          const data = (await res.json()) as { text?: string }
-          if (data.text?.trim()) {
-            lastTranscript = data.text.trim()
-            emitSession()
-            return lastTranscript
-          }
-        }
-      } else if (provider === 'gemini') {
-        const b64 = await blobToBase64(wav)
-        const geminiModel = configuredModel('VITE_GEMINI_MODEL', 'gemini-2.5-flash')
-        const res = await fetchImpl(
-          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-goog-api-key': key,
-            },
-            body: JSON.stringify({
-              contents: [
-                {
-                  parts: [
-                    { text: 'Transcribe this spoken English question about Telegram Collectible Gifts verbatim. Output only the spoken words.' },
-                    { inlineData: { mimeType: 'audio/wav', data: b64 } },
-                  ],
-                },
-              ],
-              generationConfig: {
-                temperature: 0,
-                maxOutputTokens: 120,
-                thinkingConfig: { thinkingBudget: 0 },
-              },
-            }),
-            signal,
-          },
-        )
-        if (res.ok) {
-          const data = (await res.json()) as {
-            candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
-          }
-          const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
-          if (text) {
-            lastTranscript = text
-            emitSession()
-            return text
-          }
-        }
-      }
-    } catch (err) {
-      if (signal.aborted) throw err
-      lastError = 'Token audio transcription failed — fell back to local speech decoder.'
-      emitSession()
-    }
-  }
+  const aiResult = await transcribeFreeformWithEphemeralAi(pcm, signal, fetchImpl)
+  if (aiResult?.text) return aiResult.text
 
   // Zero-token path: prefer live browser SpeechRecognition sentence if captured, then offline SoundSwallower WASM
   const browserSpeech = fallbackBrowserTranscript()?.trim()
@@ -711,5 +722,147 @@ export async function askGiftiAiQuestion(
   } finally {
     inFlightCount = Math.max(0, inFlightCount - 1)
     emitSession()
+  }
+}
+
+function extractNormalizedNumbers(text: string): string[] {
+  const out: string[] = []
+  const normalized = text.replace(/\u2212/gu, '-')
+  const re = /(?:^|[\s([+])?(-)?(\d[\d,]*(?:\.\d+)?|\.\d+)(?:([kKmMbB])(?![A-Za-z]))?/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(normalized)) !== null) {
+    const neg = m[1] === '-'
+    const noComma = m[2]!.replaceAll(',', '')
+    const suffix = (m[3] ?? '').toLowerCase()
+    const num = Number(noComma)
+    const canonical = Number.isFinite(num) ? `${neg && num !== 0 ? '-' : ''}${num}` : `${neg ? '-' : ''}${noComma}`
+    out.push(suffix ? `${canonical}${suffix}` : canonical)
+  }
+  return out
+}
+
+/**
+ * Verifies that every numeric figure in an LLM-generated Telegram reply draft
+ * appears verbatim (modulo comma/trailing-zero formatting) in the grounded FACTS,
+ * and enforces `(snapshot)` parity when grounded facts come from a snapshot.
+ */
+export function isNumberGrounded(output: string, factTexts: readonly string[]): boolean {
+  const clean = output.trim()
+  if (!clean) return false
+  const allowed = new Set<string>()
+  let hasSnapshotFact = false
+  for (const fact of factTexts) {
+    if (fact.includes('(snapshot)')) hasSnapshotFact = true
+    for (const num of extractNormalizedNumbers(fact)) {
+      allowed.add(num)
+    }
+  }
+  const outputNumbers = extractNormalizedNumbers(clean)
+  for (const num of outputNumbers) {
+    if (!allowed.has(num)) return false
+  }
+  if (hasSnapshotFact && outputNumbers.length > 0 && !/\(snapshot\)/i.test(clean)) {
+    return false
+  }
+  return true
+}
+
+function sanitizeDraftOutput(raw: string): string {
+  return raw
+    .replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200d\ufe0e\ufe0f]/gu, '')
+    .replace(/[\p{Extended_Pictographic}\p{Regional_Indicator}]/gu, '')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, 220)
+}
+
+export async function buildAiReplyDraft(
+  question: TelegramQuestion,
+  facts: readonly TelegramSmartDraft[],
+  signal?: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ text: string; provider: EphemeralAiProvider } | null> {
+  signal?.throwIfAborted()
+  const activeKey = ephemeralApiKey
+  const activeProvider = ephemeralProvider
+  if (!activeKey || !activeProvider || !facts.length) return null
+
+  const factTexts = facts.map(f => f.text)
+  const snapshotRule = factTexts.some(t => t.includes('(snapshot)'))
+    ? ' Include "(snapshot)" whenever quoting numbers.'
+    : ''
+  const systemPrompt =
+    'Draft a concise Telegram moderator reply (max 200 characters, plain text, no markdown, no emojis) answering the collector question using ONLY numbers and marketplace names present in FACTS. Never invent numbers.' +
+    snapshotRule +
+    '\n\nFACTS:\n' +
+    factTexts.map((t, i) => `${i + 1}. ${t}`).join('\n')
+  const userContent = `From ${question.sender}${question.contextText ? ` (replying to: "${question.contextText}")` : ''}: ${question.text}`
+
+  try {
+    let rawReply = ''
+    if (activeProvider === 'openai' || activeProvider === 'groq') {
+      const endpoint =
+        activeProvider === 'groq'
+          ? 'https://api.groq.com/openai/v1/chat/completions'
+          : 'https://api.openai.com/v1/chat/completions'
+      const model =
+        activeProvider === 'groq'
+          ? configuredModel('VITE_GROQ_MODEL', 'llama-3.3-70b-versatile')
+          : configuredModel('VITE_OPENAI_MODEL', 'gpt-4o-mini')
+      const res = await fetchImpl(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${activeKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.15,
+          max_tokens: 110,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userContent },
+          ],
+        }),
+        signal,
+      })
+      if (!res.ok) return null
+      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> }
+      rawReply = data.choices?.[0]?.message?.content ?? ''
+    } else if (activeProvider === 'gemini') {
+      const geminiModel = configuredModel('VITE_GEMINI_MODEL', 'gemini-2.5-flash')
+      const res = await fetchImpl(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': activeKey,
+          },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: 'user', parts: [{ text: userContent }] }],
+            generationConfig: {
+              temperature: 0.15,
+              maxOutputTokens: 130,
+              thinkingConfig: { thinkingBudget: 0 },
+            },
+          }),
+          signal,
+        },
+      )
+      if (!res.ok) return null
+      const data = (await res.json()) as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
+      }
+      rawReply = data.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+    }
+
+    const sanitized = sanitizeDraftOutput(rawReply)
+    if (!sanitized || !isNumberGrounded(sanitized, factTexts)) return null
+    return { text: sanitized, provider: activeProvider }
+  } catch (err) {
+    if (signal?.aborted) throw err
+    return null
   }
 }

@@ -5,12 +5,15 @@ import { getBundledCatalog } from '../src/services/bundledMarketData.ts'
 import { createCollectorToolbox } from '../src/services/collectorTools.ts'
 import {
   askGiftiAiQuestion,
+  buildAiReplyDraft,
   clearEphemeralAiToken,
   detectAiProviderFromKey,
   getGiftiSessionSnapshot,
+  isNumberGrounded,
   pcm16ToWavBlob,
   resetGiftiSessionForTests,
   setEphemeralAiToken,
+  transcribeFreeformWithEphemeralAi,
   transcribeWithEphemeralAiOrFallback,
 } from '../src/services/giftiAiBridge.ts'
 import { hostHttpFetch, PUBLIC_API_ORIGIN } from '../src/services/phoneHostBridge.ts'
@@ -429,4 +432,76 @@ test('Gifti handles greetings, "hello what can you do", controls/standalone help
   assert.match(presetPage.title, /1\/4/)
   assert.ok(presetPage.browse)
   assert.ok(presetPage.chart)
+})
+
+test('Dictate-or-Draft AI helpers enforce strict number grounding, (snapshot) parity, and RAM-only key gating', async () => {
+  resetGiftiSessionForTests()
+  const facts = 'Plush Pepe cheapest on Portals at 4,820 GRAM vs Tonnel 4,990 GRAM (3.5% spread) (snapshot).'
+
+  // 1. isNumberGrounded accepts comma-normalized grounded numbers, enforces sign/suffixes, and rejects hallucinations or missing (snapshot)
+  assert.equal(isNumberGrounded('Portals leads at 4820 GRAM vs 4,990 GRAM (snapshot).', [facts]), true)
+  assert.equal(isNumberGrounded('Portals leads at 4,820 GRAM vs 4,990 GRAM.', [facts]), false, 'Must enforce (snapshot) parity')
+  assert.equal(isNumberGrounded('Floor jumped to 9,999 GRAM today (snapshot).', [facts]), false, 'Must reject hallucinated numbers')
+  assert.equal(isNumberGrounded('Portals 9999GRAM (snapshot).', [facts]), false, 'Must reject hallucinated numbers glued to letters')
+  assert.equal(isNumberGrounded('Floor 12TON now (snapshot).', [facts]), false, 'Must reject glued unit numbers')
+  assert.equal(isNumberGrounded('Portals leads at 4.8k GRAM (snapshot).', [facts]), false, 'Must reject ungrounded k/m abbreviations')
+  assert.equal(isNumberGrounded('Floor is .5 GRAM (snapshot).', ['Plush Pepe 5-venue spread (snapshot).']), false, 'Must reject leading-dot decimals')
+  assert.equal(
+    isNumberGrounded('Floor moved \u22121.2% today (snapshot).', ['Plush Pepe moved +1.2% vs yesterday (snapshot).']),
+    false,
+    'Must reject Unicode minus sign flips',
+  )
+  assert.equal(
+    isNumberGrounded('Floor moved +1.2% today (snapshot).', ['Plush Pepe moved -1.2% vs yesterday (snapshot).']),
+    false,
+    'Must reject sign-flipped percentages (-1.2% -> +1.2%)',
+  )
+  assert.equal(
+    isNumberGrounded('Floor moved -1.2% today (snapshot).', ['Plush Pepe moved -1.2% vs yesterday (snapshot).']),
+    true,
+  )
+
+  // 2. Without key, both buildAiReplyDraft and transcribeFreeformWithEphemeralAi return null immediately
+  const sampleQ = { id: 'q1', sender: '@mira', chatLabel: 'Group', text: 'Plush Pepe spread?' }
+  const sampleDrafts = [{ id: 'venue-spread', label: 'Spread', collection: 'Plush Pepe', text: facts }]
+  assert.equal(await buildAiReplyDraft(sampleQ, sampleDrafts), null)
+  assert.equal(await transcribeFreeformWithEphemeralAi(new Uint8Array([1, 2, 3, 4]), new AbortController().signal), null)
+
+  // 3. With key, grounded draft passes while hallucinated draft is silently dropped
+  assert.equal(setEphemeralAiToken('gsk_test_dictation_key_1234567890abcdef'), true)
+  const goodDraft = await buildAiReplyDraft(
+    sampleQ,
+    sampleDrafts,
+    undefined,
+    async () =>
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: 'Portals is cheapest at 4,820 GRAM (3.5% below Tonnel) (snapshot).' } }] }),
+        { status: 200 },
+      ),
+  )
+  assert.ok(goodDraft)
+  assert.equal(goodDraft.provider, 'groq')
+  assert.match(goodDraft.text, /4,820 GRAM/)
+
+  const hallucinatedDraft = await buildAiReplyDraft(
+    sampleQ,
+    sampleDrafts,
+    undefined,
+    async () =>
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: 'Portals is 9,999 GRAM right now (snapshot).' } }] }),
+        { status: 200 },
+      ),
+  )
+  assert.equal(hallucinatedDraft, null, 'Hallucinated AI draft must be discarded')
+
+  const dictated = await transcribeFreeformWithEphemeralAi(
+    new Uint8Array([1, 2, 3, 4]),
+    new AbortController().signal,
+    async () => new Response(JSON.stringify({ text: 'Checking Portals listing now' }), { status: 200 }),
+  )
+  assert.deepEqual(dictated, { text: 'Checking Portals listing now', provider: 'groq' })
+
+  clearEphemeralAiToken()
+  resetGiftiSessionForTests()
 })

@@ -601,6 +601,13 @@ export function createCollectionDisplay(onChange: () => void) {
         store.openQuestions()
         return true
       }
+      if (command.kind === 'telegram-pending') {
+        const store = getTelegram()
+        if (!store || !phone.canUseVoiceTarget?.(selection)) return false
+        if (store.openPending) store.openPending()
+        else store.openQuestions()
+        return true
+      }
       if (command.kind === 'telegram-digest') {
         const store = getTelegram()
         if (!store?.openDigest || !phone.canUseVoiceTarget?.(selection)) return false

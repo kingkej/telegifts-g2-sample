@@ -20,6 +20,7 @@ import type { CompanionToolbox } from '../contracts/tools.ts'
 import { formatCompanionPrice } from '../lib/format.ts'
 import { resolveDeepLinkMatchKey } from '../lib/deepLinkMatchKey.ts'
 import type { ResolvedGiftLink } from '../lib/giftLinkResolver.ts'
+import { readJson } from '../lib/storage.ts'
 import {
   getG2HardwarePreferences,
   setG2HardwarePreferences,
@@ -38,8 +39,10 @@ import {
 } from './bundledMarketData.ts'
 import {
   createCollectorToolbox,
+  WATCHLIST_STORAGE_KEY,
   type CollectorToolboxInstance,
   type PriceWatchRule,
+  type WatchlistEntry,
 } from './collectorTools.ts'
 import {
   askGiftiAiQuestion,
@@ -721,6 +724,7 @@ let sharedTelegramStore: TelegramCompanionStore | null = null
 let sharedTelegramInspector: CompanionInspector | undefined
 let sharedCollectorTools: CollectorToolboxInstance | null = null
 let latestReadCollection: (() => string | undefined) | null = null
+let latestFavoriteNamesReader: (() => readonly string[]) | null = null
 let hostGiftLinkOpener: ((rawInput: string) => ResolvedGiftLink | null) | null = null
 let hostIrlListenStarter: ((durationMs?: number) => boolean) | null = null
 let hostBrowserSpeechReader: (() => string | null) | null = null
@@ -749,6 +753,18 @@ export function triggerHostLiveAsk(): void {
   sharedTelegramStore.triggerHeadsUpQuestion()
 }
 
+export function triggerHostBurstAsks(): { queuedSilent: number; interrupted: unknown } | null {
+  if (!sharedTelegramStore) return null
+  sharedTelegramStore.closeManagement()
+  return sharedTelegramStore.triggerBurstDemoQuestions()
+}
+
+export function openHostPendingSummary(): void {
+  if (!sharedTelegramStore) return
+  sharedTelegramStore.closeManagement()
+  sharedTelegramStore.openPending()
+}
+
 export async function askHostGiftiPrompt(prompt: string): Promise<void> {
   await sharedCollectorTools?.submitGiftiPrompt(prompt, 'phone')
 }
@@ -771,6 +787,15 @@ export function closeHostOverlays(): void {
   sharedTelegramStore?.cancelDraft()
 }
 
+function readHostTriageContext(): { favorites: readonly string[]; watchlist: readonly string[] } {
+  const favorites = latestFavoriteNamesReader?.() ?? []
+  const watchEntries = readJson<WatchlistEntry[]>(WATCHLIST_STORAGE_KEY, [])
+  const watchlist = Array.isArray(watchEntries)
+    ? watchEntries.map(e => (typeof e?.collection === 'string' ? e.collection : '')).filter(Boolean)
+    : []
+  return { favorites, watchlist }
+}
+
 function getOrCreateHostTelegramStore(inspector: CompanionInspector): TelegramCompanionStore {
   if (!sharedTelegramStore || sharedTelegramInspector !== inspector) {
     sharedTelegramInspector = inspector
@@ -782,6 +807,8 @@ function getOrCreateHostTelegramStore(inspector: CompanionInspector): TelegramCo
       undefined,
       () => bridgeMarketState.isLiveCatalog,
       () => bridgeMarketState.isLiveHistory,
+      readHostTriageContext,
+      () => getGiftiSessionSnapshot().hasEphemeralKey,
     )
   }
   return sharedTelegramStore
@@ -817,6 +844,9 @@ export function useHostCompanionTools(
   readCollection: () => string | undefined,
 ): CompanionToolbox | null {
   latestReadCollection = readCollection
+  latestFavoriteNamesReader = companion?.favoriteCollections
+    ? () => companion.favoriteCollections!.getSnapshot().collections.map(c => c.name)
+    : null
   const tools = useMemo(() => {
     if (!ready || !companion?.setTools || !companion.inspector) return null
     const tg = getOrCreateHostTelegramStore(companion.inspector)

@@ -20,6 +20,8 @@ export interface SmartReplyOptions {
   series7d?: CompanionFloorSeries | null
   /** Whether the floor catalog came from a live market API vs bundled paper snapshot. */
   hasLiveCatalog?: boolean
+  /** Optional detected question intent to promote the best-matching answer to drafts[0]. */
+  intent?: 'spread' | 'floor' | 'chart' | 'delta' | 'generic'
 }
 
 export function detectQuestionCollection(
@@ -51,7 +53,11 @@ export function buildSmartReplyDrafts(
 
   const matched =
     question.collectionHint
-    ?? detectQuestionCollection(question.text, catalog, focusedCollection)
+    ?? detectQuestionCollection(
+      question.contextText ? `${question.text} ${question.contextText}` : question.text,
+      catalog,
+      focusedCollection,
+    )
     ?? focusedCollection
     ?? 'Plush Pepe'
 
@@ -126,6 +132,20 @@ export function buildSmartReplyDrafts(
     collection: matched,
     text: `Saw your ${matched} question — checking current listings and model floors now.`,
   })
+
+  if (options.intent && options.intent !== 'generic') {
+    const preferredIds =
+      options.intent === 'spread'
+        ? ['venue-spread']
+        : options.intent === 'delta'
+          ? ['daily-delta']
+          : ['floor-chart', 'floor-quote']
+    const idx = drafts.findIndex(d => preferredIds.includes(d.id))
+    if (idx > 0) {
+      const [promoted] = drafts.splice(idx, 1)
+      drafts.unshift(promoted!)
+    }
+  }
 
   return drafts
 }

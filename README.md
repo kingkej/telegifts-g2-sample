@@ -18,12 +18,12 @@ TeleGifts G2 brings Telegram Gift collectibles, cross-venue floor analytics, and
 
 | Capability | Status | Details |
 | --- | --- | --- |
-| **G2 `576 × 288` Spatial HUD, Charts & Voice Grammar** | **Live (Offline)** | SDK `0.0.16` validated 3-region HUD (`textColor` `2 / 4 / 3`), `256 × 144` UTC floor & 5-venue spread charts, 3D relief preview, and offline SoundSwallower WASM JSGF speech recognition. |
+| **G2 `576 × 288` Spatial HUD, Charts & Voice Grammar** | **Live (Offline)** | SDK `0.0.16` validated 3-region HUD (`textColor` `2 / 4 / 3`), `256 × 144` UTC floor & 5-venue spread charts, 3D relief preview, deterministic P1/P2/P3 Answer-First Triage + 1-screen `Pending` summary, and offline SoundSwallower WASM JSGF speech recognition. |
 | **TON/USDT Spot Rate & On-Chain Portfolio** | **Live Holdings + Snapshot Pricing** | Live CoinGecko TON/USDT spot ticker (offline fallback); real on-chain Telegram Gift NFT holdings for TON addresses (`EQ...` / `UQ...` / `.ton`) and Fragment collectible usernames (`@name` / `name.t.me` via TonAPI DNS owner lookup), priced against the bundled snapshot unless `VITE_MARKET_API_URL` is configured. `@collector` / `@ton_alpha` are labeled synthetic demo portfolios. |
-| **Telegram Bot Relay (`server/telegramRelay.mjs`)** | **Live (Self-Hosted)** | Real Bot API pairing (`/start`), forum topic `/ask` capture, `sendMessage` / `sendPhoto` (`floor-chart.png` / `venue-spread.png`), inline `callback_query` buttons, and SSE push with immediate long-poll re-polling. Requires your own Bot token locally or on a personal server. |
-| **Gifti Market Analyst** | **Offline Rule-Based + Optional Live LLM** | Unlimited local rule-based analyst out of the box (no quota, no key). Paste an optional 1-time RAM-only OpenAI (`sk-...`), Gemini (`AIza...`), or Groq (`gsk_...`) key for live LLM & Whisper answers. |
-| **Gift Market Catalog & Simulated Inbox** | **Bundled Snapshot (Overrideable)** | Ships with a deterministic Nov 24, 2026 24-collection multi-venue snapshot and demo `/ask` questions so judges can test zero-key. Set `VITE_MARKET_API_URL` to connect a live feed; live Telegram replies mark snapshot data with `(snapshot)`. |
-| **IMU Head-Nod Triage & IRL `speakerRole=other`** | **Experimental (Simulator-Verified)** | Verified end-to-end in the browser Studio, Even Hub Simulator, and automated tests (`250` tests). Not yet calibrated against physical Even Realities G2 hardware traces. |
+| **Telegram Bot Relay (`server/telegramRelay.mjs`)** | **Live (Self-Hosted)** | Real Bot API pairing (`/start`), forum topic `/ask` & reply-to-bot follow-up capture, Live Loop `👀` / `👍` reactions & typing/upload actions (`/g2/telegram/ack`), `sendMessage` / `sendPhoto` (`floor-chart.png` / `venue-spread.png`), inline `callback_query` buttons, Inline Mode (`@bot <gift>` snapshot cards via `answerInlineQuery`), optional atomic `RELAY_STATE_FILE` persistence, and SSE push with immediate long-poll re-polling. Requires your own Bot token locally or on a personal server. |
+| **Gifti Analyst & Dictate-or-Draft Composer** | **Offline Rule-Based + Optional Live LLM** | Unlimited local rule-based analyst and grounded smart-reply drafts out of the box (no quota, no key). Paste an optional 1-time RAM-only OpenAI (`sk-...`), Gemini (`AIza...`), or Groq (`gsk_...`) key for live LLM answers, strict number-grounded AI reply drafts, and free-form R1 Ring voice dictation (always Tap-to-send). |
+| **Gift Market Catalog & Simulated Inbox** | **Bundled Snapshot (Overrideable)** | Ships with a deterministic Nov 24, 2026 24-collection multi-venue snapshot and demo `/ask` questions so judges can test zero-key. Set `VITE_MARKET_API_URL` to connect a live feed; live Telegram replies and inline cards mark snapshot data with `(snapshot)`. |
+| **IMU Head-Nod Triage & IRL `speakerRole=other`** | **Experimental (Simulator-Verified)** | Verified end-to-end in the browser Studio, Even Hub Simulator, and automated tests (`259` tests). Not yet calibrated against physical Even Realities G2 hardware traces. |
 
 ---
 
@@ -37,7 +37,7 @@ npm run dev
 Open `http://localhost:3000` on desktop (`?raw=1` shows only the phone view; `?studio=1` forces the side-by-side G2 Studio on narrow screens):
 1. Click **▶ Auto-Tour** for a guided walkthrough, or click the lens and use `↑/↓` (Swipe), `Enter` (Tap), `Esc` (2×Tap), and `Space` (Hold R1 Ring).
 2. Test **🎤 Speak G2 Command (Real Mic)** for offline `16 kHz` WASM speech recognition, or type/speak to the **Offline Gifti Analyst** (and optionally paste a 1-time RAM-only OpenAI / Gemini / Groq key).
-3. Click **⚡ + Live /ask Alert** (or open **Explore → Telegram Setup**) to test the `/ask` heads-up interrupt, 1-tap Smart Reply with 7d/spread PNGs, `t.me/nft/PlushPepe-412` quick-beam, and all **9 Collector Copilot tools**.
+3. Click **⚡ + Live /ask Alert**, **⚡×3 Burst /asks**, or **📋 Pending** (or open **Explore → Telegram Setup**) to test deterministic P1/P2/P3 triage, silent P3 queuing vs. P1 heads-up interrupts, intent-ranked 1-tap Smart Replies with 7d/spread PNGs, `t.me/nft/PlushPepe-412` quick-beam, and all **9 Collector Copilot tools**.
 4. In **Tools → User portfolio**, try `@collector` (labeled synthetic demo) or any real public TON wallet (`EQ...` / `UQ...` / `.ton`) or Fragment collectible `@username`.
 
 ### Official Even Hub Simulator
@@ -66,6 +66,9 @@ Connect a real Telegram Bot while keeping `TELEGRAM_BOT_TOKEN` strictly server-s
 cp .env.example .env
 # Set TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_USERNAME in .env (never committed).
 # Optional: set RELAY_ALLOWED_CHANNELS=-100123456,@yourchannel to allow channel_post digest headlines.
+# Optional: set RELAY_STATE_FILE=.relay-state.json to persist pairing/questions/offset across restarts (never stores secrets or receipts).
+# Optional: set RELAY_REACTIONS=0 to disable 👀/👍 Live Loop reactions & typing indicators (enabled by default).
+# Optional Inline Mode: run /setinline in @BotFather for your bot so typing `@yourbot plush` in any Telegram chat shares grounded snapshot cards.
 
 # Terminal 1 — start local Bot API relay on localhost:8787
 npm run relay
@@ -89,7 +92,7 @@ $env:VITE_TELEGRAM_RELAY_URL = 'http://localhost:8787'; npm run dev
 
 - **Multi-Container Spatial HUD (`src/hudLayout.ts`, `src/glasses.ts`):** Uses SDK `0.0.16` `validateEvenHubPageContainer` with muted single-line header (`textColor: 2`, `zOrderIndex: 1`, 72-byte cap), bright focal body (`textColor: 4`, `zOrderIndex: 2`, `isEventCapture: 1`), medium footer (`textColor: 3`, `zOrderIndex: 3`), and `120 × 120` / `256 × 144` grayscale PNG container (`zOrderIndex: 4`).
 - **4 Visual Inspection Modes (`src/inspection.ts`):** 3D relief & procedural cup model (`src/giftPreview.ts`), `24h / 7d / 30d` UTC floor history (`src/floorChart.ts`), 5-venue spread bar chart (`src/spreadChart.ts`), and model/rarity browser.
-- **Telegram Moderator Loop (`src/services/telegramStore.ts`, `src/services/smartReplies.ts`, `server/telegramRelay.mjs`):** Authenticated SSE push (`/g2/telegram/events`), 1-tap grounded smart replies (`Floor + 7d chart`, `Venue spread`, `Daily UTC close`, `Quick ack`) with interactive Telegram inline buttons (`🔄 Ask Live Floor`, `📌 Pin to Digest`), R1 Ring PTT draft picker, and idempotent delivery receipts.
+- **Telegram Moderator Loop (`src/services/telegramStore.ts`, `src/services/questionTriage.ts`, `src/services/smartReplies.ts`, `server/telegramRelay.mjs`):** Deterministic Answer-First P1/P2/P3 triage (known collection, Favorites, Watchlist, venue spread, urgency, follow-ups, age) with non-destructive interrupt policy and 1-screen `Pending` summary; authenticated SSE push (`/g2/telegram/events`), Live Loop `👀` / `👍` reactions & topic-aware typing/upload actions (`/g2/telegram/ack`), reply-to-bot follow-ups, Inline Mode (`@bot <gift>`), intent-ranked 1-tap Smart Replies (`Floor + 7d chart`, `Venue spread`, `Daily UTC close`, `Quick ack`, plus optional number-grounded AI draft), R1 Ring PTT draft picker / free-form dictation (Tap-to-send), atomic `RELAY_STATE_FILE` persistence, and idempotent delivery receipts.
 - **Hardware Hooks (`src/imuGestureTriage.ts`, `src/services/evenHostStorage.ts`, `src/lib/giftLinkResolver.ts`):** Power-gated experimental IMU head-nod/shake alert triage (enabled only while an alert is on-screen), bounded 12s IRL `speakerRole=other` lookup, `glassesMenu` Morning Brief launch, Even host storage sync, `t.me/nft/...` quick-beam, and album filename lookup via `pickImageFromAlbum()`.
 - **Offline Speech Grammar (`src/voiceRecognitionGrammar.ts`, `soundswallower`):** Zero-key JSGF commands (*"Open Plush Pepe"*, *"Show the 7d chart"*, *"Show venue spread"*, *"Open inbox"*, *"Venue spread draft"*, *"Send reply"*, *"What changed in my favorites"*, etc.).
 
@@ -98,8 +101,9 @@ $env:VITE_TELEGRAM_RELAY_URL = 'http://localhost:8787'; npm run dev
 | **Explore / Favorites** | Previous / Next collection | Open gift details | Open Favorites | TeleGifts Menu / Explore |
 | **Gift Detail** | Up: 3D Relief · Down: Floor Chart | Save / Remove Favorite | Browse Models | Back to list |
 | **Floor / Spread Chart** | Switch `24h ↔ 7d ↔ 30d` / Floor | Switch to 3D Relief / Floor | — (`Menu` → Share / Spread) | Back to Detail |
-| **`LIVE /ASK` Heads-Up Alert** | — | **Tap or Nod (Exp.): Smart Reply** | — | **2×Tap or Shake (Exp.): Dismiss** |
-| **Smart Reply (`compose`)** | Cycle grounded drafts | **1-Tap Send Reply** | **Hold R1 Ring: Voice Pick Draft** | Back to Question |
+| **`LIVE /ASK` Heads-Up Alert** | — | **Tap or Nod (Exp.): Smart Reply (sends `👀`)** | — | **2×Tap or Shake (Exp.): Dismiss** |
+| **Pending Triage (`pending`)** | Open full sorted queue | **Tap: Reply to top P1** | — | Back |
+| **Smart Reply (`compose`)** | Cycle intent-ranked drafts | **1-Tap Send Reply (marks `👍`)** | **Hold R1: Dictate (LLM) / Voice Pick (Offline)** | Back to Question |
 | **Channel Digest (`digest`)** | Browse breakout & watch alerts | **Save alert to Telegram DM** | — | Back |
 
 ---

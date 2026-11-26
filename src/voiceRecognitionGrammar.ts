@@ -69,6 +69,7 @@ export function commandGrammar(decoder: Decoder, names: readonly string[]) {
   const entries: DictEntry[] = phones.map(phone => ['tgphone' + phone.toLowerCase(), phone])
   if (!decoder.lookup_word('gifti')) entries.push(['gifti', 'G IH F T IY'])
   if (!decoder.lookup_word('inbox')) entries.push(['inbox', 'IH N B AA K S'])
+  if (!decoder.lookup_word('pending')) entries.push(['pending', 'P EH N D IH NG'])
   if (!decoder.lookup_word('utc')) entries.push(['utc', 'Y UW T IY S IY'])
   if (!decoder.lookup_word('arbitrage')) entries.push(['arbitrage', 'AA R B AH T R AA ZH'])
   if (!decoder.lookup_word('whale')) entries.push(['whale', 'W EY L'])
@@ -132,7 +133,7 @@ public <utterance> = [<other> | never | do not | don't] [please] <command> [plea
 <target> = ${target};
 <owner> = ${owner};
 <command> = (open | show [me] | view) [the] (<target> [collection] | collection <target> | <view> [for <target>] | <owner> <view>)
-          | (show | open) [my | the] (favorites | favorite | inbox | questions)
+          | (show | open) [my | the] (favorites | favorite | inbox | questions | pending)
           | (save | send | share | sell) (this | that | the) (gift | list | lift | shift)
           | (send | save | share) (this | that) (chart | cart) to (my | your | the) (telegram | telegraph)
           | (reply | replay) (with | without) (chart | cart | comparison)
@@ -172,7 +173,7 @@ public <utterance> = [<other> | never | do not | don't] [please] <command> [plea
       return matchedCol ? `${topicMatch[1]} for ${matchedCol}` : null
     }
     if (
-      /^(?:go back|save this gift|send this chart to my telegram|reply with (?:chart|comparison)|draft reply|smart reply|compare (?:markets|venues)|(?:select )?(?:floor(?: chart)?|venue spread|daily(?: utc)? close|checking listings)(?: draft)?|next draft|previous draft|send reply|show (?:channel )?digest|(?:show|open) (?:(?:my|the) )?(?:favorites|inbox|questions))$/.test(
+      /^(?:go back|save this gift|send this chart to my telegram|reply with (?:chart|comparison)|draft reply|smart reply|compare (?:markets|venues)|(?:select )?(?:floor(?: chart)?|venue spread|daily(?: utc)? close|checking listings)(?: draft)?|next draft|previous draft|send reply|show (?:channel )?digest|(?:show|open) (?:(?:my|the) )?(?:favorites|inbox|questions|pending))$/.test(
         text,
       )
     )

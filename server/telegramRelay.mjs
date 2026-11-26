@@ -1,6 +1,12 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { getBundledCatalog, getCheapestVenueFloor, getVenueQuotes } from '../src/services/bundledMarketData.ts'
+import { buildSmartReplyDrafts } from '../src/services/smartReplies.ts'
+import { formatCompanionPrice } from '../src/lib/format.ts'
+import { resolveDeepLinkMatchKey } from '../src/lib/deepLinkMatchKey.ts'
 
 /**
  * Self-hosted Telegram Bot Relay for TeleGifts Even G2 Companion.
@@ -71,9 +77,144 @@ export function createTelegramRelayServer(options = {}) {
       .map(s => s.trim().replace(/^@/, '').toLowerCase())
       .filter(Boolean),
   )
+  const reactionsEnabled =
+    options.reactions !== undefined
+      ? Boolean(options.reactions)
+      : String(process.env.RELAY_REACTIONS ?? '1').trim() !== '0'
+  const stateFile = String(options.stateFile ?? process.env.RELAY_STATE_FILE ?? '').trim()
 
   const MAX_RECEIPTS = 500
   const MAX_PENDING_TOKENS = 200
+  const MAX_ACKED_QUESTIONS = 500
+  const ackedQuestionIds = new Set()
+  let loggedReactionUnavailable = false
+  let persistTimer = null
+  let persistDirty = false
+
+  function loadPersistedState() {
+    if (!stateFile || !existsSync(stateFile)) return null
+    try {
+      const raw = JSON.parse(readFileSync(stateFile, 'utf8'))
+      if (!raw || typeof raw !== 'object') return null
+      const validDest = d =>
+        d && typeof d === 'object' && typeof d.id === 'string' && typeof d.label === 'string'
+          ? { id: d.id, label: d.label }
+          : null
+      const restoredGroup = validDest(raw.group)
+      const sanitizeQuestion = q => {
+        if (
+          !q
+          || typeof q !== 'object'
+          || typeof q.id !== 'string'
+          || q.id.length === 0
+          || typeof q.chatId !== 'string'
+          || typeof q.text !== 'string'
+          || typeof q.messageId !== 'number'
+          || !Number.isFinite(q.messageId)
+        ) {
+          return null
+        }
+        return {
+          id: q.id,
+          chatId: q.chatId,
+          messageId: q.messageId,
+          ...(typeof q.topicId === 'number' && Number.isFinite(q.topicId) ? { topicId: q.topicId } : {}),
+          ...(typeof q.topicName === 'string' && q.topicName ? { topicName: q.topicName } : {}),
+          ...(typeof q.collectionHint === 'string' && q.collectionHint ? { collectionHint: q.collectionHint } : {}),
+          sender: typeof q.sender === 'string' && q.sender.trim() ? q.sender : 'Member',
+          text: q.text,
+          ...(q.isFollowUp === true ? { isFollowUp: true } : {}),
+          ...(typeof q.contextText === 'string' && q.contextText ? { contextText: q.contextText.slice(0, 200) } : {}),
+          chatLabel:
+            typeof q.chatLabel === 'string' && q.chatLabel.trim()
+              ? q.chatLabel
+              : restoredGroup?.label || 'Telegram Group',
+          ...(typeof q.askedAt === 'string' && q.askedAt ? { askedAt: q.askedAt } : {}),
+        }
+      }
+      const sanitizeDigest = d => {
+        if (
+          !d
+          || typeof d !== 'object'
+          || typeof d.id !== 'string'
+          || typeof d.channel !== 'string'
+          || typeof d.headline !== 'string'
+          || typeof d.summary !== 'string'
+        ) {
+          return null
+        }
+        return {
+          id: d.id,
+          channel: d.channel,
+          headline: d.headline,
+          summary: d.summary,
+          ...(typeof d.collection === 'string' && d.collection ? { collection: d.collection } : {}),
+          ...(typeof d.floorGram === 'number' && Number.isFinite(d.floorGram) ? { floorGram: d.floorGram } : {}),
+          ...(typeof d.changePercent === 'number' && Number.isFinite(d.changePercent) ? { changePercent: d.changePercent } : {}),
+          timestamp: typeof d.timestamp === 'string' && d.timestamp.trim() ? d.timestamp : 'Saved',
+          ...(d.kind === 'channel' || d.kind === 'breakout' || d.kind === 'spread' || d.kind === 'watch-hit'
+            ? { kind: d.kind }
+            : {}),
+        }
+      }
+      return {
+        privateChat: validDest(raw.privateChat),
+        group: restoredGroup,
+        questions: Array.isArray(raw.questions) ? raw.questions.map(sanitizeQuestion).filter(Boolean).slice(0, 30) : [],
+        digest: Array.isArray(raw.digest) ? raw.digest.map(sanitizeDigest).filter(Boolean).slice(0, 20) : [],
+        updateOffset: typeof raw.updateOffset === 'number' && Number.isFinite(raw.updateOffset) ? raw.updateOffset : 0,
+      }
+    } catch (err) {
+      console.warn(`[telegram-relay] Ignoring corrupt state file (${stateFile}):`, err instanceof Error ? err.message : String(err))
+      return null
+    }
+  }
+
+  function flushPersistedStateNow() {
+    if (persistTimer) {
+      clearTimeout(persistTimer)
+      persistTimer = null
+    }
+    if (!stateFile || !persistDirty) return
+    persistDirty = false
+    try {
+      mkdirSync(dirname(stateFile), { recursive: true })
+      const snapshot = {
+        privateChat: state.privateChat,
+        group: state.group,
+        updateOffset: state.updateOffset,
+        questions: state.questions,
+        digest: state.digest,
+      }
+      const tmp = `${stateFile}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`
+      writeFileSync(tmp, JSON.stringify(snapshot, null, 2), 'utf8')
+      renameSync(tmp, stateFile)
+    } catch (err) {
+      console.warn(`[telegram-relay] Failed to persist state (${stateFile}):`, err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  function schedulePersistState() {
+    if (!stateFile) return
+    persistDirty = true
+    if (persistTimer) return
+    persistTimer = setTimeout(() => {
+      persistTimer = null
+      flushPersistedStateNow()
+    }, 250)
+    persistTimer.unref?.()
+  }
+
+  function trackAckedQuestion(questionId) {
+    if (ackedQuestionIds.has(questionId)) return false
+    ackedQuestionIds.add(questionId)
+    while (ackedQuestionIds.size > MAX_ACKED_QUESTIONS) {
+      const oldest = ackedQuestionIds.values().next().value
+      if (oldest === undefined) break
+      ackedQuestionIds.delete(oldest)
+    }
+    return true
+  }
 
   function purgeExpiredPendingTokens(now = Date.now()) {
     for (const [token, info] of state.pendingTokens) {
@@ -116,16 +257,17 @@ export function createTelegramRelayServer(options = {}) {
     throw new Error('RELAY_AUTH_TOKEN is required when binding RELAY_HOST outside loopback (127.0.0.1 / ::1).')
   }
 
+  const persisted = loadPersistedState()
   const state = {
-    privateChat: options.initialState?.privateChat ?? null,
-    group: options.initialState?.group ?? null,
+    privateChat: options.initialState?.privateChat ?? persisted?.privateChat ?? null,
+    group: options.initialState?.group ?? persisted?.group ?? null,
     candidate: options.initialState?.candidate ?? null,
     pendingTokens: new Map(), // token -> { kind, expiresAt }
-    questions: [...(options.initialState?.questions ?? [])],
-    digest: [...(options.initialState?.digest ?? [])],
+    questions: [...(options.initialState?.questions ?? persisted?.questions ?? [])],
+    digest: [...(options.initialState?.digest ?? persisted?.digest ?? [])],
     receipts: new Map(), // requestId -> { status, reason? }
     inFlight: new Map(), // requestId -> Promise<{ status, reason? }>
-    updateOffset: 0,
+    updateOffset: persisted?.updateOffset ?? 0,
   }
 
   const callTelegram =
@@ -184,6 +326,7 @@ export function createTelegramRelayServer(options = {}) {
   }
 
   function broadcastSseState() {
+    schedulePersistState()
     if (!sseClients.size) return
     const frame = `event: state\ndata: ${JSON.stringify(publicStatePayload())}\n\n`
     for (const client of [...sseClients]) {
@@ -230,11 +373,83 @@ export function createTelegramRelayServer(options = {}) {
     return { inline_keyboard: [row] }
   }
 
+  function buildInlineArticles(rawQuery) {
+    const query = String(rawQuery ?? '').trim().slice(0, 64)
+    const queryKey = resolveDeepLinkMatchKey(query)
+    const queryLower = query.toLowerCase()
+    const catalog = getBundledCatalog()
+    const allNames = Object.keys(catalog.collection_floors)
+
+    let matchedNames
+    if (!query) {
+      matchedNames = allNames
+        .map(name => {
+          const quotes = getVenueQuotes(catalog.collection_floors[name])
+          const spreadPct =
+            quotes.length >= 2 && quotes[0].price > 0
+              ? ((quotes.at(-1).price - quotes[0].price) / quotes[0].price) * 100
+              : 0
+          return { name, spreadPct }
+        })
+        .sort((a, b) => b.spreadPct - a.spreadPct)
+        .slice(0, 5)
+        .map(item => item.name)
+    } else {
+      matchedNames = allNames
+        .filter(name => {
+          const key = resolveDeepLinkMatchKey(name)
+          return (
+            name.toLowerCase().includes(queryLower)
+            || (queryKey.length >= 2 && (key.includes(queryKey) || queryKey.includes(key)))
+          )
+        })
+        .slice(0, 5)
+    }
+
+    const results = []
+    for (const name of matchedNames) {
+      const floors = catalog.collection_floors[name]
+      const best = getCheapestVenueFloor(floors)
+      const quotes = getVenueQuotes(floors)
+      if (!best) continue
+      const drafts = buildSmartReplyDrafts(
+        { id: 'inline', sender: '', chatLabel: '', text: query || name, collectionHint: name },
+        catalog,
+        name,
+        { allowSyntheticHistory: false, hasLiveCatalog: false, intent: 'spread' },
+      )
+      const draft = drafts[0]
+      if (!draft) continue
+      const second = quotes[1]
+      const spreadNote =
+        second && best.price > 0
+          ? `+${(((second.price - best.price) / best.price) * 100).toFixed(1)}% vs ${second.marketplace} · snapshot`
+          : 'snapshot'
+      const slug = resolveDeepLinkMatchKey(name).slice(0, 48) || 'gift'
+      const id = fitUtf8Bytes(`tg2-inl-${slug}`, 64)
+      results.push({
+        type: 'article',
+        id,
+        title: `${name} · ${formatCompanionPrice(best.price)} GRAM (${best.marketplace})`,
+        description: spreadNote,
+        input_message_content: {
+          message_text: draft.text,
+        },
+      })
+    }
+    return results
+  }
+
   function ingestTelegramUpdates(updates) {
     purgeExpiredPendingTokens()
     let changed = false
+    let offsetChanged = false
     for (const update of updates) {
-      state.updateOffset = Math.max(state.updateOffset, update.update_id + 1)
+      const nextOffset = Math.max(state.updateOffset, update.update_id + 1)
+      if (nextOffset !== state.updateOffset) {
+        state.updateOffset = nextOffset
+        offsetChanged = true
+      }
       const msg = update.message
       if (msg && typeof msg.text === 'string') {
         const startMatch = /^\/start(?:@\S+)?\s+(pair_(?:private|group)_[a-z0-9-]+)$/i.exec(msg.text.trim())
@@ -276,11 +491,52 @@ export function createTelegramRelayServer(options = {}) {
               sender,
               text: askMatch[2].trim(),
               chatLabel: msg.chat.title || state.group.label,
-              askedAt: new Date(msg.date * 1000).toISOString(),
+              askedAt: typeof msg.date === 'number' && Number.isFinite(msg.date)
+                ? new Date(msg.date * 1000).toISOString()
+                : new Date().toISOString(),
             })
             state.questions = state.questions.slice(0, 30)
             changed = true
           }
+          continue
+        }
+
+        // Reply-to-bot follow-ups in the paired group (works under Telegram privacy mode without whole-chat ingestion)
+        const trimmedText = msg.text.trim()
+        const replyFrom = msg.reply_to_message?.from
+        const isReplyToThisBot = Boolean(
+          replyFrom
+          && botUsername
+          && typeof replyFrom.username === 'string'
+          && replyFrom.username.toLowerCase() === botUsername.toLowerCase(),
+        )
+        if (
+          trimmedText
+          && !trimmedText.startsWith('/')
+          && state.group
+          && String(msg.chat.id) === state.group.id
+          && isReplyToThisBot
+        ) {
+          const sender = msg.from?.username ? `@${msg.from.username}` : msg.from?.first_name || 'Member'
+          const topicId = typeof msg.message_thread_id === 'number' ? msg.message_thread_id : undefined
+          const rawParent = String(msg.reply_to_message?.text ?? msg.reply_to_message?.caption ?? '').trim()
+          state.questions.unshift({
+            id: `${msg.chat.id}:${msg.message_id}`,
+            chatId: String(msg.chat.id),
+            messageId: msg.message_id,
+            topicId,
+            topicName: topicId ? `Topic #${topicId}` : undefined,
+            sender,
+            text: trimmedText,
+            isFollowUp: true,
+            ...(rawParent ? { contextText: rawParent.slice(0, 200) } : {}),
+            chatLabel: msg.chat.title || state.group.label,
+            askedAt: typeof msg.date === 'number' && Number.isFinite(msg.date)
+              ? new Date(msg.date * 1000).toISOString()
+              : new Date().toISOString(),
+          })
+          state.questions = state.questions.slice(0, 30)
+          changed = true
         }
       }
 
@@ -375,8 +631,19 @@ export function createTelegramRelayServer(options = {}) {
           }).catch(() => {})
         }
       }
+
+      const iq = update.inline_query
+      if (iq && typeof iq.id === 'string' && iq.id && botToken) {
+        const results = buildInlineArticles(iq.query)
+        void callTelegram('answerInlineQuery', {
+          inline_query_id: iq.id,
+          results,
+          cache_time: 60,
+        }).catch(() => {})
+      }
     }
     if (changed) broadcastSseState()
+    else if (offsetChanged) schedulePersistState()
   }
 
   async function pollTelegramUpdates() {
@@ -386,7 +653,7 @@ export function createTelegramRelayServer(options = {}) {
       const updates = await callTelegram('getUpdates', {
         offset: state.updateOffset,
         timeout: 15,
-        allowed_updates: ['message', 'channel_post', 'callback_query'],
+        allowed_updates: ['message', 'channel_post', 'callback_query', 'inline_query'],
       })
       ingestTelegramUpdates(updates)
     } catch (err) {
@@ -726,6 +993,51 @@ export function createTelegramRelayServer(options = {}) {
         return
       }
 
+      if (req.method === 'POST' && url.pathname === '/g2/telegram/ack') {
+        const body = await readBody(req)
+        const resolved = resolveAuthorizedTarget(body, true)
+        if (!resolved.ok || !resolved.question?.messageId) {
+          sendJson(req, res, 404, { ok: false, reaction: 'unavailable' })
+          return
+        }
+        if (!reactionsEnabled || !botToken) {
+          sendJson(req, res, 200, { ok: true, reaction: 'unavailable' })
+          return
+        }
+        const { chatId, question } = resolved
+        const alreadyAcked = ackedQuestionIds.has(question.id)
+        const action = body.chartKind === 'chart' || body.chartKind === 'spread' ? 'upload_photo' : 'typing'
+        let reactionOk = alreadyAcked
+        if (!alreadyAcked) {
+          try {
+            await callTelegram('setMessageReaction', {
+              chat_id: chatId,
+              message_id: question.messageId,
+              reaction: [{ type: 'emoji', emoji: '👀' }],
+            })
+            trackAckedQuestion(question.id)
+            reactionOk = true
+          } catch (err) {
+            reactionOk = false
+            if (!loggedReactionUnavailable) {
+              loggedReactionUnavailable = true
+              console.warn('[telegram-relay] setMessageReaction unavailable:', err instanceof Error ? err.message : String(err))
+            }
+          }
+        }
+        try {
+          await callTelegram('sendChatAction', {
+            chat_id: chatId,
+            action,
+            ...(question.topicId ? { message_thread_id: question.topicId } : {}),
+          })
+        } catch {
+          // Best-effort typing/upload indicator
+        }
+        sendJson(req, res, 200, { ok: true, reaction: reactionOk ? 'set' : 'unavailable' })
+        return
+      }
+
       if (req.method === 'POST' && (url.pathname === '/g2/telegram/reply' || url.pathname === '/g2/telegram/send-comparison')) {
         const body = await readBody(req)
         const requestId = normalizeRequestId(body.requestId)
@@ -735,6 +1047,7 @@ export function createTelegramRelayServer(options = {}) {
         }
 
         const isComparison = url.pathname === '/g2/telegram/send-comparison'
+        let sentQuestionTarget = null
         const receipt = await executeIdempotent(requestId, async () => {
           const resolved = resolveAuthorizedTarget(body, isComparison)
           if (!resolved.ok) return resolved.receipt
@@ -756,6 +1069,7 @@ export function createTelegramRelayServer(options = {}) {
               ...(inlineMarkup ? { reply_markup: inlineMarkup } : {}),
             })
             if (question) {
+              sentQuestionTarget = { chatId, messageId: question.messageId }
               state.questions = state.questions.filter(q => q.id !== question.id)
               broadcastSseState()
             }
@@ -766,6 +1080,14 @@ export function createTelegramRelayServer(options = {}) {
             return classified
           }
         })
+
+        if (receipt.status === 'sent' && sentQuestionTarget?.messageId && reactionsEnabled && botToken) {
+          void callTelegram('setMessageReaction', {
+            chat_id: sentQuestionTarget.chatId,
+            message_id: sentQuestionTarget.messageId,
+            reaction: [{ type: 'emoji', emoji: '👍' }],
+          }).catch(() => {})
+        }
 
         sendJson(req, res, 200, receipt)
         return
@@ -779,6 +1101,7 @@ export function createTelegramRelayServer(options = {}) {
           return
         }
 
+        let sentQuestionTarget = null
         const receipt = await executeIdempotent(requestId, async () => {
           const resolved = resolveAuthorizedTarget(body, false)
           if (!resolved.ok) return resolved.receipt
@@ -812,6 +1135,7 @@ export function createTelegramRelayServer(options = {}) {
           try {
             await callTelegram('sendPhoto', form, true)
             if (question) {
+              sentQuestionTarget = { chatId, messageId: question.messageId }
               state.questions = state.questions.filter(q => q.id !== question.id)
               broadcastSseState()
             }
@@ -823,6 +1147,14 @@ export function createTelegramRelayServer(options = {}) {
           }
         })
 
+        if (receipt.status === 'sent' && sentQuestionTarget?.messageId && reactionsEnabled && botToken) {
+          void callTelegram('setMessageReaction', {
+            chat_id: sentQuestionTarget.chatId,
+            message_id: sentQuestionTarget.messageId,
+            reaction: [{ type: 'emoji', emoji: '👍' }],
+          }).catch(() => {})
+        }
+
         sendJson(req, res, 200, receipt)
         return
       }
@@ -833,7 +1165,10 @@ export function createTelegramRelayServer(options = {}) {
     }
   })
 
-  server.on('close', closeSseClients)
+  server.on('close', () => {
+    flushPersistedStateNow()
+    closeSseClients()
+  })
 
   return {
     server,
@@ -843,12 +1178,20 @@ export function createTelegramRelayServer(options = {}) {
     ingestTelegramUpdates,
     broadcastSseState,
     closeSseClients,
+    flushPersistedStateNow,
     startPolling() {
-      if (botToken && botUsername) void pollTelegramUpdates()
+      if (botToken && botUsername) {
+        void callTelegram('setMyCommands', {
+          commands: [{ command: 'ask', description: 'Ask TeleGifts G2 moderator for live floor or spread' }],
+          scope: { type: 'all_group_chats' },
+        }).catch(() => {})
+        void pollTelegramUpdates()
+      }
     },
     stopPolling() {
       pollingStopped = true
       if (pollTimer) clearTimeout(pollTimer)
+      flushPersistedStateNow()
       closeSseClients()
     },
   }
@@ -857,6 +1200,12 @@ export function createTelegramRelayServer(options = {}) {
 const isEntrypoint = Boolean(process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
 if (isEntrypoint) {
   const relay = createTelegramRelayServer()
+  const shutdown = () => {
+    relay.stopPolling()
+    relay.server.close(() => process.exit(0))
+  }
+  process.once('SIGINT', shutdown)
+  process.once('SIGTERM', shutdown)
   relay.server.listen(relay.port, relay.host, () => {
     console.log(`[telegifts-g2-relay] Listening on http://${formatHostForUrl(relay.host)}:${relay.port}`)
     if (!process.env.TELEGRAM_BOT_TOKEN?.trim() || !process.env.TELEGRAM_BOT_USERNAME?.trim()) {

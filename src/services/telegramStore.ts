@@ -25,7 +25,15 @@ import {
   getVenueQuotes,
 } from './bundledMarketData.ts'
 import { mirrorKeyToEvenHost, subscribeHostStorageHydration } from './evenHostStorage.ts'
+import { buildAiReplyDraft, getGiftiSessionSnapshot } from './giftiAiBridge.ts'
 import { getLatestTonUsdtSnapshot } from './liveTicker.ts'
+import {
+  annotateAndSortByTriage,
+  classifyReplyIntent,
+  summarizePending,
+  triageQuestion,
+  type TriageContext,
+} from './questionTriage.ts'
 import { buildSmartReplyDrafts, detectQuestionCollection } from './smartReplies.ts'
 
 export interface TelegramReceipt {
@@ -223,8 +231,8 @@ const DEMO_QUESTION_POOL: Omit<TelegramQuestion, 'id' | 'askedAt'>[] = [
     chatLabel: 'TON Gift Alpha',
     topicName: '#floor-watch',
     topicId: 14,
-    collectionHint: 'Algorithm Cup',
-    text: 'Can someone drop the Algorithm Cup 7d floor chart? Hearing Champions got swept.',
+    collectionHint: 'Plush Pepe',
+    text: 'Plush Pepe just got swept — is Portals still cheapest right now?',
   },
   {
     sender: '@denis_mint',
@@ -232,7 +240,7 @@ const DEMO_QUESTION_POOL: Omit<TelegramQuestion, 'id' | 'askedAt'>[] = [
     topicName: '#deals-radar',
     topicId: 22,
     collectionHint: 'Swiss Watch',
-    text: 'Where is the lowest Swiss Watch ask listed right now?',
+    text: 'Where is the lowest Swiss Watch ask listed?',
   },
   {
     sender: '@ton_curator',
@@ -276,6 +284,9 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
   private inspector: CompanionInspector
   private getCatalog: () => CollectionFloorsResponse | null
   private getFocusedCollection: () => string | null
+  private getTriageContext?: () => { favorites?: readonly string[]; watchlist?: readonly string[] }
+  private isDictationAvailable: () => boolean
+  private activeAiDraftAbort: AbortController | null = null
 
   constructor(
     inspector: CompanionInspector,
@@ -286,12 +297,16 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
     hasLiveCatalogSource: () => boolean = () =>
       Boolean(((import.meta as { env?: Record<string, string> }).env?.VITE_MARKET_API_URL ?? '').trim()),
     hasLiveHistorySource: () => boolean = () => false,
+    getTriageContext?: () => { favorites?: readonly string[]; watchlist?: readonly string[] },
+    isDictationAvailable: () => boolean = () => getGiftiSessionSnapshot().hasEphemeralKey,
   ) {
     this.inspector = inspector
     this.getCatalog = getCatalog
     this.getFocusedCollection = getFocusedCollection
     this.hasLiveCatalogSource = hasLiveCatalogSource
     this.hasLiveHistorySource = hasLiveHistorySource
+    this.getTriageContext = getTriageContext
+    this.isDictationAvailable = isDictationAvailable
 
     const savedCfg = readJson<RelayRuntimeConfig | null>(RELAY_CFG_KEY, null)
     const envUrl = ((import.meta as { env?: Record<string, string> }).env?.VITE_TELEGRAM_RELAY_URL ?? '').trim()
@@ -335,6 +350,7 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
     if (savedReceipt?.questionId) {
       this.requestQuestions.set(savedReceipt.requestId, savedReceipt.questionId)
     }
+    const initialQuestions = this.relayUrl ? [] : this.triageQuestions(INITIAL_QUESTIONS, true)
     this.view = {
       state: this.relayUrl
         ? null
@@ -344,10 +360,10 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
             privateChat: { id: 'dm-collector', label: 'Saved Messages (@collector)' },
             group: { id: 'grp-alpha', label: 'TON Gift Alpha' },
             candidate: null,
-            questions: INITIAL_QUESTIONS,
+            questions: initialQuestions,
             digest: INITIAL_DIGEST,
           },
-      selectedQuestion: this.relayUrl ? null : (INITIAL_QUESTIONS[0] ?? null),
+      selectedQuestion: this.relayUrl ? null : (initialQuestions[0] ?? null),
       screen: { kind: 'idle' },
       manageOpen: false,
       pairing: false,
@@ -480,6 +496,7 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
     }
     const sentLog = readJson<SentTelegramLogItem[]>(this.sentLogStorageKey(), [])
     this.requestCounter = Math.max(this.requestCounter, receipt?.seq ?? 0, ...sentLog.map(i => i.seq ?? 0))
+    const demoQuestions = this.triageQuestions(INITIAL_QUESTIONS, true)
 
     this.emit({
       relayConfig: { relayUrl: '', relayToken: '', explicitDemo: true },
@@ -489,7 +506,7 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
       pairingKind: null,
       receipt,
       sentLog,
-      selectedQuestion: INITIAL_QUESTIONS[0] ?? null,
+      selectedQuestion: demoQuestions[0] ?? null,
       screen: { kind: 'idle' },
       state: {
         enabled: true,
@@ -497,7 +514,7 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
         privateChat: { id: 'dm-collector', label: 'Saved Messages (@collector)' },
         group: { id: 'grp-alpha', label: 'TON Gift Alpha' },
         candidate: null,
-        questions: INITIAL_QUESTIONS,
+        questions: demoQuestions,
         digest: INITIAL_DIGEST,
       },
     })
@@ -542,6 +559,45 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
     for (const listener of this.listeners) listener()
   }
 
+  private buildTriageContext(isDemo: boolean): TriageContext {
+    const extra = this.getTriageContext?.()
+    return {
+      favorites: extra?.favorites ?? [],
+      watchlist: extra?.watchlist ?? [],
+      catalog: this.getCatalog(),
+      spreadSignalAllowed: isDemo || this.hasLiveCatalogSource(),
+    }
+  }
+
+  private triageQuestions(questions: readonly TelegramQuestion[], isDemo: boolean): TelegramQuestion[] {
+    if (!questions.length) return []
+    return annotateAndSortByTriage(questions, this.buildTriageContext(isDemo))
+  }
+
+  private shouldInterruptScreen(priority: 1 | 2 | 3, screen: TelegramScreen): boolean {
+    const effectiveKind = screen.kind
+    if (effectiveKind === 'compose' || effectiveKind === 'confirm' || effectiveKind === 'sending') {
+      return false
+    }
+    if (priority === 1) {
+      if (effectiveKind === 'heads-up') {
+        return (screen.priority ?? 2) > 1
+      }
+      return (
+        effectiveKind === 'idle'
+        || effectiveKind === 'questions'
+        || effectiveKind === 'digest'
+        || effectiveKind === 'pending'
+        || effectiveKind === 'notice'
+        || effectiveKind === 'result'
+      )
+    }
+    if (priority === 2) {
+      return effectiveKind === 'idle'
+    }
+    return false
+  }
+
   private reconcileQuestionScreen(
     questions: readonly TelegramQuestion[],
     hasGroup: boolean,
@@ -555,7 +611,7 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
       if (!hasGroup || !questions.some(q => q.id === screen.question.id)) {
         return { kind: 'notice', reason: 'changed' }
       }
-    } else if (screen.kind === 'questions' && !hasGroup) {
+    } else if ((screen.kind === 'questions' || screen.kind === 'pending') && !hasGroup) {
       return { kind: 'idle' }
     }
     return undefined
@@ -574,14 +630,16 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const remote = (await response.json()) as TelegramState
       if (this.modeGeneration !== scope.modeGen) return
-      for (const q of remote.questions) this.seenQuestionIds.add(q.id)
+      const sortedQuestions = this.triageQuestions(remote.questions, false)
+      for (const q of sortedQuestions) this.seenQuestionIds.add(q.id)
       this.seenQuestionsInitialized = true
       const selected =
-        remote.questions.find(q => q.id === this.view.selectedQuestion?.id) ?? remote.questions[0] ?? null
-      const nextScreen = this.reconcileQuestionScreen(remote.questions, Boolean(remote.group))
+        sortedQuestions.find(q => q.id === this.view.selectedQuestion?.id) ?? sortedQuestions[0] ?? null
+      const nextScreen = this.reconcileQuestionScreen(sortedQuestions, Boolean(remote.group))
       this.emit({
         state: {
           ...remote,
+          questions: sortedQuestions,
           mode: 'relay',
           digest: this.mergeDigestWithLocalWatches(remote.digest ?? []),
         },
@@ -834,6 +892,10 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
 
   disconnectLiveStream = () => {
     this.streamConnected = false
+    if (this.activeAiDraftAbort) {
+      this.activeAiDraftAbort.abort()
+      this.activeAiDraftAbort = null
+    }
     if (this.streamReconnectTimer) {
       clearTimeout(this.streamReconnectTimer)
       this.streamReconnectTimer = null
@@ -855,28 +917,34 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
 
     const applyPushedState = (remote: TelegramState) => {
       if (this.modeGeneration !== scope.modeGen || abort.signal.aborted) return
+      const sortedQuestions = this.triageQuestions(remote.questions, false)
       let newestArrival: TelegramQuestion | undefined
       if (!this.seenQuestionsInitialized) {
-        for (const q of remote.questions) this.seenQuestionIds.add(q.id)
+        for (const q of sortedQuestions) this.seenQuestionIds.add(q.id)
         this.seenQuestionsInitialized = true
       } else {
-        for (const q of remote.questions) {
+        for (const q of sortedQuestions) {
           if (!this.seenQuestionIds.has(q.id)) {
             this.seenQuestionIds.add(q.id)
-            if (!newestArrival) newestArrival = q
+            if (!newestArrival || (q.priority ?? 3) < (newestArrival.priority ?? 3)) {
+              newestArrival = q
+            }
           }
         }
       }
 
+      const reconciledScreen = this.reconcileQuestionScreen(sortedQuestions, Boolean(remote.group))
+      const effectiveScreen = reconciledScreen ?? this.view.screen
+      const effectiveKind = effectiveScreen.kind
+      const arrivalPriority = newestArrival?.priority ?? 2
+      const shouldInterrupt = Boolean(
+        newestArrival && remote.group && this.shouldInterruptScreen(arrivalPriority, effectiveScreen),
+      )
       const selected =
-        newestArrival
-        ?? remote.questions.find(q => q.id === this.view.selectedQuestion?.id)
-        ?? remote.questions[0]
+        (shouldInterrupt ? newestArrival : undefined)
+        ?? sortedQuestions.find(q => q.id === this.view.selectedQuestion?.id)
+        ?? sortedQuestions[0]
         ?? null
-
-      const reconciledScreen = this.reconcileQuestionScreen(remote.questions, Boolean(remote.group))
-      const effectiveKind = reconciledScreen ? reconciledScreen.kind : this.view.screen.kind
-      const shouldInterrupt = Boolean(newestArrival && remote.group && effectiveKind === 'idle')
       const badge = newestArrival
         ? newestArrival.topicName
           ? `${newestArrival.chatLabel} · ${newestArrival.topicName}`
@@ -886,6 +954,7 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
       this.emit({
         state: {
           ...remote,
+          questions: sortedQuestions,
           mode: 'relay',
           digest: this.mergeDigestWithLocalWatches(remote.digest ?? []),
         },
@@ -899,11 +968,15 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
                 headline: `${newestArrival.sender}${newestArrival.collectionHint ? ` · ${newestArrival.collectionHint}` : ''}`,
                 detail: newestArrival.text,
                 question: newestArrival,
+                priority: arrivalPriority,
+                tags: newestArrival.triageTags,
               },
             }
           : reconciledScreen
             ? { screen: reconciledScreen }
-            : {}),
+            : effectiveKind === 'pending'
+              ? { screen: { kind: 'pending', summary: summarizePending(sortedQuestions, this.buildTriageContext(false)) } }
+              : {}),
       })
     }
 
@@ -968,44 +1041,172 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
 
   triggerHeadsUpQuestion = (explicitQuestion?: TelegramQuestion): TelegramQuestion | null => {
     if (!this.view.state) return null
-    let target = explicitQuestion
-    if (!target) {
+    const isDemo = !this.relayUrl && (this.view.state.mode ?? 'demo') === 'demo'
+    const ctx = this.buildTriageContext(isDemo)
+    if (!explicitQuestion) {
       const template = DEMO_QUESTION_POOL[this.questionCounter++ % DEMO_QUESTION_POOL.length]!
-      target = {
+      const raw: TelegramQuestion = {
         ...template,
         id: `q-sim-${Date.now()}-${this.questionCounter}`,
         askedAt: 'Just now',
       }
-      const questions = [target, ...this.view.state.questions]
+      const triaged = triageQuestion(raw, ctx)
+      const target: TelegramQuestion = {
+        ...raw,
+        ...(triaged.collection && !raw.collectionHint ? { collectionHint: triaged.collection } : {}),
+        priority: triaged.level,
+        triageTags: triaged.tags,
+        replyIntent: triaged.intent,
+      }
+      const questions = this.triageQuestions([target, ...this.view.state.questions], isDemo)
       this.seenQuestionIds.add(target.id)
+      const canInterrupt = this.shouldInterruptScreen(triaged.level, this.view.screen)
       const badge = target.topicName ? `${target.chatLabel} · ${target.topicName}` : target.chatLabel
       this.emit({
         state: { ...this.view.state, questions },
-        selectedQuestion: target,
-        screen: {
-          kind: 'heads-up',
-          alertId: target.id,
-          badge,
-          headline: `${target.sender}${target.collectionHint ? ` · ${target.collectionHint}` : ''}`,
-          detail: target.text,
-          question: target,
-        },
+        ...(canInterrupt
+          ? {
+              selectedQuestion: target,
+              screen: {
+                kind: 'heads-up',
+                alertId: target.id,
+                badge,
+                headline: `${target.sender}${target.collectionHint ? ` · ${target.collectionHint}` : ''}`,
+                detail: target.text,
+                question: target,
+                priority: target.priority,
+                tags: target.triageTags,
+              },
+            }
+          : {}),
       })
       return target
     }
-    const badge = target.topicName ? `${target.chatLabel} · ${target.topicName}` : target.chatLabel
+    const triaged = triageQuestion(explicitQuestion, ctx)
+    const priority = explicitQuestion.priority ?? triaged.level
+    const enriched: TelegramQuestion = {
+      ...explicitQuestion,
+      priority,
+      triageTags: explicitQuestion.triageTags ?? triaged.tags,
+      replyIntent: explicitQuestion.replyIntent ?? triaged.intent,
+    }
+    if (!this.shouldInterruptScreen(priority, this.view.screen)) {
+      return enriched
+    }
+    const badge = enriched.topicName ? `${enriched.chatLabel} · ${enriched.topicName}` : enriched.chatLabel
     this.emit({
-      selectedQuestion: target,
+      selectedQuestion: enriched,
       screen: {
         kind: 'heads-up',
-        alertId: target.id,
+        alertId: enriched.id,
         badge,
-        headline: `${target.sender}${target.collectionHint ? ` · ${target.collectionHint}` : ''}`,
-        detail: target.text,
-        question: target,
+        headline: `${enriched.sender}${enriched.collectionHint ? ` · ${enriched.collectionHint}` : ''}`,
+        detail: enriched.text,
+        question: enriched,
+        priority: enriched.priority,
+        tags: enriched.triageTags,
       },
     })
-    return target
+    return enriched
+  }
+
+  /**
+   * Injects a 3-message demo burst (P3 quiet chatter -> P2 spread ask -> P1 urgent favorite)
+   * so judges immediately see silent P3 queueing vs. P1 heads-up interruption.
+   */
+  triggerBurstDemoQuestions = (): { queuedSilent: number; interrupted: TelegramQuestion | null } => {
+    if (!this.view.state) return { queuedSilent: 0, interrupted: null }
+    const isDemo = !this.relayUrl && (this.view.state.mode ?? 'demo') === 'demo'
+    const ctx = this.buildTriageContext(isDemo)
+    const now = Date.now()
+    const batch: TelegramQuestion[] = [
+      {
+        id: `q-burst-p3-${now}-${++this.questionCounter}`,
+        sender: '@chatter_dev',
+        chatLabel: 'TON Gift Alpha',
+        topicName: '#general',
+        topicId: 2,
+        askedAt: 'Just now',
+        text: 'gm everyone, how are vibes in the group this week?',
+      },
+      {
+        id: `q-burst-p2-${now}-${++this.questionCounter}`,
+        sender: '@denis_mint',
+        chatLabel: 'TON Gift Alpha',
+        topicName: '#deals-radar',
+        topicId: 22,
+        collectionHint: 'Swiss Watch',
+        askedAt: 'Just now',
+        text: 'Where is the lowest Swiss Watch ask listed?',
+      },
+      {
+        id: `q-burst-p1-${now}-${++this.questionCounter}`,
+        sender: '@lena_whale',
+        chatLabel: 'TON Gift Alpha',
+        topicName: '#floor-watch',
+        topicId: 14,
+        collectionHint: 'Plush Pepe',
+        askedAt: 'Just now',
+        text: 'Plush Pepe just got swept — is Portals still cheapest right now?',
+      },
+    ]
+
+    let queuedSilent = 0
+    let interrupted: TelegramQuestion | null = null
+    let questions = [...this.view.state.questions]
+    let currentScreen = this.view.screen
+
+    for (const raw of batch) {
+      const t = triageQuestion(raw, ctx)
+      const q: TelegramQuestion = {
+        ...raw,
+        ...(t.collection && !raw.collectionHint ? { collectionHint: t.collection } : {}),
+        priority: t.level,
+        triageTags: t.tags,
+        replyIntent: t.intent,
+      }
+      this.seenQuestionIds.add(q.id)
+      questions = this.triageQuestions([q, ...questions], isDemo)
+      if (this.shouldInterruptScreen(t.level, currentScreen)) {
+        const badge = q.topicName ? `${q.chatLabel} · ${q.topicName}` : q.chatLabel
+        interrupted = q
+        currentScreen = {
+          kind: 'heads-up',
+          alertId: q.id,
+          badge,
+          headline: `${q.sender}${q.collectionHint ? ` · ${q.collectionHint}` : ''}`,
+          detail: q.text,
+          question: q,
+          priority: t.level,
+          tags: t.tags,
+        }
+      } else {
+        queuedSilent++
+      }
+    }
+
+    const preservedSelected = questions.find(q => q.id === this.view.selectedQuestion?.id) ?? null
+    this.emit({
+      state: { ...this.view.state, questions },
+      selectedQuestion: interrupted ?? preservedSelected ?? questions[0] ?? null,
+      screen: currentScreen,
+    })
+    return { queuedSilent, interrupted }
+  }
+
+  openPending = () => {
+    const state = this.view.state
+    if (!state?.enabled) {
+      this.emit({ screen: { kind: 'notice', reason: 'unavailable' } })
+      return
+    }
+    if (!state.group) {
+      this.emit({ screen: { kind: 'notice', reason: 'group' } })
+      return
+    }
+    const isDemo = !this.relayUrl && (state.mode ?? 'demo') === 'demo'
+    const summary = summarizePending(state.questions, this.buildTriageContext(isDemo))
+    this.emit({ screen: { kind: 'pending', summary } })
   }
 
   simulateIncomingQuestion = (): TelegramQuestion | null => {
@@ -1144,19 +1345,29 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
     const isDemo = !this.relayUrl && (state.mode ?? 'demo') === 'demo'
     const catalog = this.getCatalog()
     const focused = this.getFocusedCollection()
+    const combinedText = question.contextText ? `${question.text} ${question.contextText}` : question.text
     const resolvedCollection =
       question.collectionHint
-      ?? detectQuestionCollection(question.text, catalog, focused)
+      ?? detectQuestionCollection(combinedText, catalog, focused)
       ?? focused
       ?? 'Plush Pepe'
 
+    const intent = question.replyIntent ?? classifyReplyIntent(question.text)
     const drafts = buildSmartReplyDrafts(question, catalog, resolvedCollection, {
       allowSyntheticHistory: isDemo,
       hasLiveCatalog: isDemo ? true : this.hasLiveCatalogSource(),
       series7d: this.verifiedSeriesForCollection(resolvedCollection, isDemo),
+      intent,
     })
     const topicSuffix = question.topicName ? ` · ${question.topicName}` : ''
     const composeSessionId = ++this.composeSessionCounter
+    const dictation = this.isDictationAvailable()
+
+    if (this.activeAiDraftAbort) {
+      this.activeAiDraftAbort.abort()
+      this.activeAiDraftAbort = null
+    }
+
     this.emit({
       selectedQuestion: question,
       screen: {
@@ -1167,8 +1378,58 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
         destinationId: state.group.id,
         drafts,
         index: 0,
+        dictation,
+        ...(isDemo ? { askerFeedback: 'seen' as const } : {}),
       },
     })
+
+    // Telegram Live Loop: fire-and-forget 👀 ack + typing/upload_photo indicator on explicit Tap into compose
+    const scope = this.captureScope()
+    if (scope.relayUrl) {
+      const firstDraft = drafts[0]
+      const chartKind = firstDraft?.attachSpreadChart ? 'spread' : firstDraft?.attachChart ? 'chart' : 'none'
+      void fetch(`${scope.relayUrl}/g2/telegram/ack`, {
+        method: 'POST',
+        headers: scope.relayHeadersJson,
+        body: JSON.stringify({ questionId: question.id, destinationId: state.group.id, chartKind }),
+      })
+        .then(res => (res.ok ? res.json() : null))
+        .then((data: { reaction?: string } | null) => {
+          if (this.modeGeneration !== scope.modeGen) return
+          const cur = this.view.screen
+          if (cur.kind !== 'compose' || cur.composeSessionId !== composeSessionId) return
+          if (data?.reaction === 'set') {
+            this.emit({ screen: { ...cur, askerFeedback: 'seen' } })
+          }
+        })
+        .catch(() => {})
+    }
+
+    // Optional AI reply draft (strictly number-grounded, appended at END so index 0 and composeId never shift)
+    if (dictation) {
+      const aiAbort = new AbortController()
+      this.activeAiDraftAbort = aiAbort
+      void buildAiReplyDraft(question, drafts, aiAbort.signal)
+        .then(aiResult => {
+          if (this.activeAiDraftAbort === aiAbort) this.activeAiDraftAbort = null
+          if (!aiResult || aiAbort.signal.aborted) return
+          const cur = this.view.screen
+          if (cur.kind !== 'compose' || cur.composeSessionId !== composeSessionId) return
+          if (cur.drafts.some(d => d.id === 'ai-draft')) return
+          const providerLabel = aiResult.provider.charAt(0).toUpperCase() + aiResult.provider.slice(1)
+          const aiDraft: TelegramSmartDraft = {
+            id: 'ai-draft',
+            label: `AI draft (${providerLabel})`,
+            collection: resolvedCollection,
+            text: aiResult.text,
+          }
+          this.emit({ screen: { ...cur, drafts: [...cur.drafts, aiDraft] } })
+        })
+        .catch(() => {
+          if (this.activeAiDraftAbort === aiAbort) this.activeAiDraftAbort = null
+        })
+    }
+
     return true
   }
 
@@ -1191,6 +1452,16 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
       return true
     }
     if (lower === 'send reply') {
+      const focusedDraft = screen.drafts[screen.index]
+      if (
+        !focusedDraft
+        || focusedDraft.id.startsWith('dictated-')
+        || focusedDraft.id === 'ai-draft'
+        || focusedDraft.id.startsWith('phone-custom-')
+      ) {
+        // Free-form dictated, AI-generated, or custom drafts ALWAYS require an explicit physical Tap to send.
+        return false
+      }
       this.activate()
       return true
     }
@@ -1225,24 +1496,48 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
     return false
   }
 
-  applyCustomNote = (noteText: string): boolean => {
+  private insertCustomDraft(rawText: string, idPrefix: 'phone-custom-' | 'dictated-', label: string): boolean {
     const screen = this.view.screen
     if (screen.kind !== 'compose') return false
-    const clean = noteText.trim()
+    const clean = rawText
+      .replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069\u200d\ufe0e\ufe0f]/gu, '')
+      .replace(/[\p{Extended_Pictographic}\p{Regional_Indicator}]/gu, '')
+      .replace(/\s+/gu, ' ')
+      .trim()
+      .slice(0, 280)
     if (!clean) return false
+    const formatted = clean[0]!.toUpperCase() + clean.slice(1) + (/[.!?]$/.test(clean) ? '' : '.')
     const customDraft: TelegramSmartDraft = {
-      id: `phone-custom-${++this.requestCounter}`,
-      label: 'Custom note',
+      id: `${idPrefix}${++this.requestCounter}`,
+      label,
       collection: screen.drafts[0]?.collection,
-      text: clean[0]!.toUpperCase() + clean.slice(1) + (/[.!?]$/.test(clean) ? '' : '.'),
+      text: formatted,
     }
-    const nextDrafts = [customDraft, ...screen.drafts.filter(d => !d.id.startsWith('phone-custom-'))]
+    const nextDrafts = [customDraft, ...screen.drafts.filter(d => !d.id.startsWith(idPrefix))]
     this.emit({ screen: { ...screen, drafts: nextDrafts, index: 0 } })
     return true
   }
 
+  applyCustomNote = (noteText: string): boolean => {
+    return this.insertCustomDraft(noteText, 'phone-custom-', 'Custom note')
+  }
+
+  applyDictatedReply = (dictatedText: string, expectedComposeId?: string): boolean => {
+    const screen = this.view.screen
+    if (screen.kind !== 'compose') return false
+    if (expectedComposeId && this.currentComposeId() !== expectedComposeId) return false
+    return this.insertCustomDraft(dictatedText, 'dictated-', 'Dictated')
+  }
+
   step = (direction: -1 | 1) => {
     const { screen, state } = this.view
+    if (screen.kind === 'pending') {
+      const questions = state?.questions ?? []
+      if (questions.length > 0) {
+        this.emit({ screen: { kind: 'questions', index: 0 } })
+      }
+      return
+    }
     if (screen.kind === 'questions') {
       const questions = state?.questions ?? []
       const next = screen.index + direction
@@ -1262,6 +1557,11 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
 
   activate = () => {
     const { screen, state } = this.view
+    if (screen.kind === 'pending') {
+      if (screen.summary.topQuestion) this.openCompose(screen.summary.topQuestion)
+      else this.openQuestions()
+      return
+    }
     if (screen.kind === 'heads-up') {
       if (screen.question) this.openCompose(screen.question)
       else this.openQuestions()
@@ -1337,6 +1637,10 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
       return
     }
     if (screen.kind === 'compose') {
+      if (this.activeAiDraftAbort) {
+        this.activeAiDraftAbort.abort()
+        this.activeAiDraftAbort = null
+      }
       this.emit({ screen: { kind: 'question', question: screen.question } })
       return
     }
@@ -1349,6 +1653,10 @@ export class TelegramCompanionStore implements CompanionTelegramControl {
   }
 
   cancelDraft = () => {
+    if (this.activeAiDraftAbort) {
+      this.activeAiDraftAbort.abort()
+      this.activeAiDraftAbort = null
+    }
     if (this.view.screen.kind !== 'idle') this.emit({ screen: { kind: 'idle' } })
   }
 

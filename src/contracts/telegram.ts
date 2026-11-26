@@ -66,6 +66,21 @@ export interface TelegramQuestion {
   topicId?: number
   collectionHint?: string
   askedAt?: string
+  isFollowUp?: boolean
+  contextText?: string
+  priority?: 1 | 2 | 3
+  triageTags?: readonly string[]
+  replyIntent?: 'spread' | 'floor' | 'chart' | 'delta' | 'generic'
+}
+
+export interface PendingTriageSummary {
+  total: number
+  p1Count: number
+  p2Count: number
+  p3Count: number
+  oldestLabel: string | null
+  topCollections: readonly { name: string; count: number }[]
+  topQuestion: TelegramQuestion | null
 }
 
 export interface TelegramSmartDraft {
@@ -108,6 +123,12 @@ export type TelegramScreen =
       headline: string
       detail: string
       question?: TelegramQuestion
+      priority?: 1 | 2 | 3
+      tags?: readonly string[]
+    }
+  | {
+      kind: 'pending'
+      summary: PendingTriageSummary
     }
   | { kind: 'questions'; index: number }
   | { kind: 'question'; question: TelegramQuestion }
@@ -119,6 +140,8 @@ export type TelegramScreen =
       destinationId: string
       drafts: readonly TelegramSmartDraft[]
       index: number
+      dictation?: boolean
+      askerFeedback?: 'seen' | 'unavailable'
     }
   | {
       kind: 'digest'
@@ -163,9 +186,11 @@ export interface CompanionTelegramControl {
   getSnapshot(): CompanionTelegramSnapshot
   subscribe(listener: () => void): () => void
   openQuestions(): void
+  openPending?(): void
   openDigest?(): void
   openCompose?(question?: TelegramQuestion): boolean
   applyVoiceReply?(spokenText: string, expectedComposeId?: string): boolean
+  applyDictatedReply?(dictatedText: string, expectedComposeId?: string): boolean
   step(direction: -1 | 1): void
   activate(): void
   back(): void

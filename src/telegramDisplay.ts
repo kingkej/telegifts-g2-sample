@@ -67,7 +67,12 @@ export function telegramPage(
       return null
 
     case 'heads-up': {
-      const header = fitNativeText(`LIVE /ASK · ${singleLine(screen.badge)}`, 180)
+      const pri = screen.priority ?? screen.question?.priority
+      const tags = screen.tags ?? screen.question?.triageTags ?? []
+      const prefix = pri
+        ? [`P${pri}`, ...tags.slice(0, 2)].join(' · ')
+        : 'LIVE /ASK'
+      const header = fitNativeText(`${prefix} · ${singleLine(screen.badge)}`, 72)
       const bodyLines = [
         fitNativeText(singleLine(screen.headline), 180),
         fitNativeText(singleLine(screen.detail), 360),
@@ -78,6 +83,41 @@ export function telegramPage(
         'telegramActivate',
         screen.alertId,
         `heads-up-${screen.alertId}`,
+        { header, body: bodyLines.join('\n'), footer },
+      )
+    }
+
+    case 'pending': {
+      const s = screen.summary
+      const oldestPart = s.oldestLabel ? ` · oldest ${singleLine(s.oldestLabel)}` : ''
+      const header = fitNativeText(
+        `${s.total} WAITING · ${s.p1Count} P1${oldestPart}`,
+        72,
+      )
+      if (!s.topQuestion) {
+        const body = 'All caught up. No pending /ask questions.'
+        const footer = 'Tap: Check inbox · 2×Tap: Back'
+        return page([header, body, '', footer], 'telegramActivate', 'pending-empty', 'pending', {
+          header,
+          body,
+          footer,
+        })
+      }
+      const colSummary = s.topCollections.length
+        ? s.topCollections.map(c => (c.count > 1 ? `${c.name} ×${c.count}` : c.name)).join(' · ')
+        : 'General group questions'
+      const topLetters = characters(singleLine(s.topQuestion.text))
+      const topPreview = topLetters.length > 52 ? topLetters.slice(0, 51).join('') + '…' : topLetters.join('')
+      const bodyLines = [
+        fitNativeText(colSummary, 160),
+        fitNativeText(`Top: ${singleLine(s.topQuestion.sender)} "${topPreview}"`, 220),
+      ]
+      const footer = 'Tap: Reply top · Swipe: Browse · 2×Tap: Back'
+      return page(
+        [header, ...bodyLines, '', footer],
+        'telegramActivate',
+        `pending-${s.topQuestion.id}`,
+        'pending',
         { header, body: bodyLines.join('\n'), footer },
       )
     }
@@ -94,7 +134,14 @@ export function telegramPage(
       const letters = characters(singleLine(q.text))
       const preview = letters.length > 72 ? letters.slice(0, 71).join('') + '…' : letters.join('')
       const chatWithTopic = q.topicName ? `${q.chatLabel} · ${q.topicName}` : q.chatLabel
-      const heading = ['Questions   ' + (screen.index + 1) + ' / ' + questions.length, '', label(q.sender), label(chatWithTopic)]
+      const priSuffix = q.priority ? ` · P${q.priority}` : ''
+      const tagSuffix = q.triageTags?.length ? ` · ${q.triageTags[0]}` : ''
+      const heading = [
+        `Questions   ${screen.index + 1} / ${questions.length}${priSuffix}${tagSuffix}`,
+        '',
+        label(q.sender),
+        label(chatWithTopic),
+      ]
       const hints = ['', 'Swipe to browse · Tap to read', 'Double-tap to return']
       const available = nativeTextBytes - byteLength([...heading, '', ...hints].join('\n'))
       return page([...heading, fitNativeText(preview, available), ...hints], 'telegramActivate', q.id)
@@ -114,9 +161,10 @@ export function telegramPage(
       if (!draft) {
         return page(['Telegram', '', notices.changed, '', dismiss], 'telegramBack', null, 'changed')
       }
+      const seenTag = screen.askerFeedback === 'seen' ? ' · SEEN' : ''
       const header = fitNativeText(
-        `REPLY ${screen.index + 1}/${screen.drafts.length} · ${singleLine(screen.destination)} · ${singleLine(screen.question.sender)}`,
-        180,
+        `REPLY ${screen.index + 1}/${screen.drafts.length}${seenTag} · ${singleLine(screen.question.sender)} · ${singleLine(screen.destination)}`,
+        72,
       )
       const attachmentBadge = draft.attachChart
         ? ' [+7d Chart]'
@@ -128,7 +176,8 @@ export function telegramPage(
         fitNativeText(singleLine(draft.text), 420),
       ]
       const sessionId = screen.composeSessionId ?? 0
-      const footer = 'Tap: Send · Swipe: Drafts · Hold R1: Voice pick · 2×Tap: Back'
+      const ringHint = screen.dictation ? 'Hold R1: Dictate' : 'Hold R1: Voice pick'
+      const footer = `Tap: Send · Swipe: Drafts · ${ringHint} · 2×Tap: Back`
       return page(
         [header, ...bodyLines, '', footer],
         'telegramComposeSend',

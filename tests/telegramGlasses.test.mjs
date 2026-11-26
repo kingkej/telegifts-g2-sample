@@ -727,3 +727,151 @@ test('question previews preserve emoji and long details fit a native rebuild wit
   assert.match(h.content(), /(?:👩‍👩‍👧‍👧)+…\nRead the full question on your phone\.$/)
   assert.equal(h.content().replaceAll(family, '').includes('👩'), false)
 })
+
+test('compose R1 Ring PTT supports free-form dictation (Tap-to-send only), compose commands, and offline fallback', async t => {
+  const originalWindow = globalThis.window
+  const originalDocument = globalThis.document
+  let hubEvent
+  let layout
+  let audioSeq = 0
+
+  const bridge = {
+    ready: true,
+    audioControl: t.mock.fn(async () => true),
+    createStartUpPageContainer: t.mock.fn(async p => { layout = p; return 0 }),
+    rebuildPageContainer: t.mock.fn(async p => { layout = p; return true }),
+    textContainerUpgrade: t.mock.fn(async p => { layout.textObject[0].content = p.content; return true }),
+    updateImageRawData: t.mock.fn(async () => 'success'),
+    onEvenHubEvent(fn) { hubEvent = fn; return () => { hubEvent = undefined } },
+    onDeviceStatusChanged() { return () => {} },
+  }
+  globalThis.window = Object.assign(new EventTarget(), { EvenAppBridge: bridge })
+  globalThis.document = Object.assign(new EventTarget(), { hidden: false })
+
+  let snap = {
+    state,
+    selectedQuestion: state.questions[0],
+    screen: {
+      kind: 'compose',
+      composeSessionId: 1,
+      question: state.questions[0],
+      destination: 'Gift group',
+      destinationId: 'group',
+      drafts: [
+        { id: 'venue-spread', label: 'Venue spread', collection: 'Toy Bear', text: 'Toy Bear 10 GRAM on MRKT.' },
+        { id: 'quick-ack', label: 'Quick ack', collection: 'Toy Bear', text: 'Checking Toy Bear now.' },
+      ],
+      index: 0,
+      dictation: true,
+      askerFeedback: 'seen',
+    },
+  }
+  const listeners = new Set()
+  const applyVoiceReply = t.mock.fn(() => true)
+  const applyDictatedReply = t.mock.fn(text => {
+    snap = {
+      ...snap,
+      screen: {
+        ...snap.screen,
+        drafts: [{ id: 'dictated-1', label: 'Dictated', text: `${text}.` }, ...snap.screen.drafts],
+        index: 0,
+      },
+    }
+    for (const l of listeners) l()
+    return true
+  })
+  const activate = t.mock.fn()
+  const store = {
+    getSnapshot: () => snap,
+    subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+    openQuestions: t.mock.fn(),
+    step: t.mock.fn(),
+    activate,
+    back: t.mock.fn(),
+    share: t.mock.fn(),
+    cancelDraft: t.mock.fn(),
+    applyVoiceReply,
+    applyDictatedReply,
+  }
+
+  let session
+  const display = createCollectionDisplay(() => session?.update())
+  display.companion.setTelegram(store)
+  const disconnect = display.companion.connect({
+    loadCatalog: async () => ({ collection_floors: { 'Toy Bear': { mrkt: 10 } } }),
+    loadArtwork: async () => null,
+    loadFloorChart: async () => series,
+    canUseVoiceTarget: () => true,
+    back: () => false,
+    setFavorite: () => {},
+  })
+  display.companion.marketChanged({ period: '7d', filter: 'all', observations: new Map(), browse: { status: 'catalog' }, stale: false })
+
+  let dictationResponse = 'I can pick up that Toy Bear at 9.5 GRAM'
+  const transcribeDictation = t.mock.fn(async () => dictationResponse)
+  const transcribeOffline = t.mock.fn(async () => 'next draft')
+  const voice = createVoiceControl({
+    names: () => ['Toy Bear'],
+    resolve: display.resolveVoice,
+    transcribe: transcribeOffline,
+  })
+  session = await connectGlasses({ ...display, voice, transcribeDictation, showDisplayError: t.mock.fn() }, () => {})
+  t.after(async () => {
+    await session?.stop()
+    disconnect()
+    globalThis.window = originalWindow
+    globalThis.document = originalDocument
+  })
+
+  await settle()
+  await new Promise(r => setTimeout(r, 30))
+  assert.ok(validateEvenHubPageContainer(layout).valid)
+  const composeHeader = layout.textObject.find(t => t.zOrderIndex === 1)?.content ?? ''
+  const composeFooter = layout.textObject.find(t => t.zOrderIndex === 3)?.content ?? ''
+  assert.match(composeHeader, /· SEEN/)
+  assert.match(composeFooter, /Hold R1: Dictate/)
+
+  // Helper to simulate R1 Ring hold + voiced 16kHz PCM + release
+  const emitPtt = async () => {
+    hubEvent(evenHubEventFromJson({ type: 'sys_event', jsonData: { Event_Type: os.LONG_PRESS_EVENT } }))
+    await new Promise(r => setTimeout(r, 20))
+    for (let f = 0; f < 4; f++) {
+      const pcm = new Uint8Array(3200)
+      const view = new DataView(pcm.buffer)
+      for (let i = 0; i < 1600; i++) view.setInt16(i * 2, Math.round(Math.sin((f * 1600 + i) * 0.25) * 9000), true)
+      hubEvent({ audioEvent: { source: 'glasses', audioPcm: pcm, seq: ++audioSeq, speakerRole: 'self' } })
+    }
+    hubEvent(evenHubEventFromJson({ type: 'sys_event', jsonData: { Event_Type: os.LONG_PRESS_RELEASE_EVENT } }))
+    await new Promise(r => setTimeout(r, 40))
+  }
+
+  // 1. Free-form dictation inserts Dictated draft at index 0 and NEVER auto-sends
+  await emitPtt()
+  assert.equal(applyDictatedReply.mock.callCount(), 1)
+  assert.equal(applyDictatedReply.mock.calls[0].arguments[0], 'I can pick up that Toy Bear at 9.5 GRAM')
+  assert.equal(activate.mock.callCount(), 0, 'Dictation must NEVER auto-send without explicit Tap')
+  assert.equal(applyVoiceReply.mock.callCount(), 0)
+
+  // 2. Spoken "send reply" rejected by store on dictated draft MUST NOT poison submittedComposeId for subsequent physical Tap
+  applyVoiceReply.mock.mockImplementationOnce(() => false)
+  dictationResponse = 'send reply'
+  await emitPtt()
+  assert.equal(applyVoiceReply.mock.callCount(), 1)
+  assert.equal(activate.mock.callCount(), 0)
+  hubEvent(evenHubEventFromJson({ type: 'text_event', jsonData: { Container_ID: layout.textObject[0].containerID, Event_Type: os.CLICK_EVENT } }))
+  await settle()
+  assert.equal(activate.mock.callCount(), 1, 'Physical Tap after rejected spoken send must still work')
+
+  // 3. Spoken compose command ("next draft") routes to applyVoiceReply instead of inserting a literal dictated draft
+  dictationResponse = 'next draft'
+  await emitPtt()
+  assert.equal(applyVoiceReply.mock.callCount(), 2)
+  assert.equal(applyVoiceReply.mock.calls[1].arguments[0], 'next draft')
+  assert.equal(applyDictatedReply.mock.callCount(), 1)
+
+  // 4. Returning null from transcribeDictation (no LLM key) falls back to offline JSGF picker
+  dictationResponse = null
+  await emitPtt()
+  assert.equal(transcribeOffline.mock.callCount(), 1)
+  assert.equal(applyVoiceReply.mock.callCount(), 3)
+})

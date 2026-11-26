@@ -17,16 +17,22 @@ import {
   syncEvenHostStorage,
   type HostStorageBridgeLike,
 } from './services/evenHostStorage.ts'
+import {
+  getGiftiSessionSnapshot,
+  transcribeFreeformWithEphemeralAi,
+} from './services/giftiAiBridge.ts'
 import { startLiveTonUsdtTicker } from './services/liveTicker.ts'
 import {
   askHostGiftiPrompt,
   closeHostOverlays,
   notifyHostBridgeRateChanged,
   openHostGiftiVoice,
+  openHostPendingSummary,
   openHostResearch,
   registerHostBrowserSpeechReader,
   registerHostGiftLinkOpener,
   registerHostIrlListenStarter,
+  triggerHostBurstAsks,
   triggerHostLiveAsk,
 } from './services/phoneHostBridge.ts'
 import {
@@ -105,6 +111,10 @@ const glasses = createGlassesConnection((onClosed, showDisplayError, onStartupRe
       voice,
       transcribeOverheard: async (pcm, names, signal) =>
         (await import('./voiceRecognition.ts')).transcribeVoice(pcm, names, signal, 'overheard'),
+      transcribeDictation: async (pcm, signal) => {
+        if (!getGiftiSessionSnapshot().hasEphemeralKey) return null
+        return (await transcribeFreeformWithEphemeralAi(pcm, signal))?.text ?? null
+      },
       showDisplayError,
       onMirrorChange,
     },
@@ -143,6 +153,8 @@ if (initialSimControls) {
     companion: appCompanion,
     startIrlListen: (durationMs?: number) => glasses.startIrlListen(durationMs),
     triggerLiveAsk: triggerHostLiveAsk,
+    triggerBurstAsks: triggerHostBurstAsks,
+    openPending: openHostPendingSummary,
     askGiftiText: askHostGiftiPrompt,
     startGiftiVoice: openHostGiftiVoice,
     openResearch: () => openHostResearch('Plush Pepe'),
@@ -182,6 +194,8 @@ async function bootstrapCompanionUi() {
       voice: voice.controls,
       runVoicePhrase,
       triggerLiveAsk: triggerHostLiveAsk,
+      triggerBurstAsks: triggerHostBurstAsks,
+      openPending: openHostPendingSummary,
       askGiftiText: askHostGiftiPrompt,
       startGiftiVoice: openHostGiftiVoice,
       startIrlListen: () => glasses.startIrlListen(12_000),

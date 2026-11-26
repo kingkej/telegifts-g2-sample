@@ -631,6 +631,10 @@ export interface GlassesControls {
     names: readonly string[],
     signal: AbortSignal,
   ): Promise<string | null>
+  transcribeDictation?(
+    pcm: Uint8Array<ArrayBuffer>,
+    signal: AbortSignal,
+  ): Promise<string | null>
   onGlassesMenuLaunch?(): void
   onOverheardTranscript?(transcript: string): void
   onMirrorChange?(mirror: GlassesHudMirror | null): void
@@ -649,6 +653,7 @@ export async function connectGlasses(
     voice: configuredVoice,
     voiceNames,
     transcribeOverheard,
+    transcribeDictation,
     getTelegram,
     shareChart,
     getTools,
@@ -1556,7 +1561,13 @@ export async function connectGlasses(
       voice?.backFromOverlay()
       return
     }
-    if (!textConfirmed || !sameActions(acknowledged, live) || (writingPage && !sameActions(writingPage, live))) {
+    const isComposePttRelease =
+      Boolean(composePtt)
+      && live.navigation === 'telegram'
+      && live.list.startsWith('compose-')
+      && live.id === composePtt!.composeId
+      && types.includes(OsEventTypeList.LONG_PRESS_RELEASE_EVENT)
+    if (!isComposePttRelease && (!textConfirmed || !sameActions(acknowledged, live) || (writingPage && !sameActions(writingPage, live)))) {
       update()
       return
     }
@@ -1616,7 +1627,11 @@ export async function connectGlasses(
     }
     if (!phoneVisible && (live.navigation === 'telegram' || live.navigation === 'voice')) return
     if (live.navigation === 'telegram') {
-      const swipable = live.list === 'questions' || live.list.startsWith('compose-') || live.list.startsWith('digest-')
+      const swipable =
+        live.list === 'questions'
+        || live.list === 'pending'
+        || live.list.startsWith('compose-')
+        || live.list.startsWith('digest-')
       if (swipable && types.includes(OsEventTypeList.SCROLL_TOP_EVENT)) {
         stopComposePtt()
         live.telegram?.step(-1)
@@ -1664,25 +1679,42 @@ export async function connectGlasses(
           const pcm = ptt.utterance.take()
           const micClosedPromise = enqueuePttMicClose()
           const activeVoice = voice
-          if (hasSpeech && activeVoice) {
+          if (hasSpeech && (activeVoice || transcribeDictation)) {
             const pendingTranscribe = { composeId: ptt.composeId, abort: ptt.abort }
             activeComposeTranscribe = pendingTranscribe
+            const composeCommandRe =
+              /^(?:next draft|previous draft|send reply|(?:select )?(?:floor(?: chart)?|venue spread|daily(?: utc)? close|checking listings)(?: draft)?)$/i
             void micClosedPromise
-              .then(micClosedOk => {
+              .then(async micClosedOk => {
                 if (!micClosedOk || closed || ptt.abort.signal.aborted) return null
-                return activeVoice.transcribePcm(pcm, ptt.abort.signal)
+                if (transcribeDictation) {
+                  const dictated = (await transcribeDictation(pcm, ptt.abort.signal))?.trim() ?? null
+                  if (dictated) return { text: dictated, fromDictation: true as const }
+                }
+                if (!activeVoice) return null
+                const cmdText = (await activeVoice.transcribePcm(pcm, ptt.abort.signal))?.trim() ?? null
+                return cmdText ? { text: cmdText, fromDictation: false as const } : null
               })
-              .then(transcript => {
+              .then(result => {
                 if (activeComposeTranscribe === pendingTranscribe) activeComposeTranscribe = null
-                const clean = transcript?.trim()
+                const clean = result?.text
                 if (!clean || closed || ptt.abort.signal.aborted) return
                 const latestPage = currentPage()
                 if (!latestPage.list.startsWith('compose-') || latestPage.id !== ptt.composeId) return
-                if (clean.toLowerCase() === 'send reply') {
-                  if (latestPage.id === submittedComposeId) return
-                  submittedComposeId = latestPage.id
+                const tg = getTelegram?.()
+                const normalizedCmd = clean.replace(/[.!?]+$/g, '').trim()
+                if (result.fromDictation && !composeCommandRe.test(normalizedCmd)) {
+                  // Dictated free-form text NEVER auto-sends — user must inspect on G2 and explicitly Tap!
+                  tg?.applyDictatedReply?.(clean, ptt.composeId)
+                  return
                 }
-                getTelegram?.()?.applyVoiceReply?.(clean, ptt.composeId)
+                if (normalizedCmd.toLowerCase() === 'send reply') {
+                  if (latestPage.id === submittedComposeId) return
+                  const accepted = tg?.applyVoiceReply?.(normalizedCmd, ptt.composeId)
+                  if (accepted) submittedComposeId = latestPage.id
+                  return
+                }
+                tg?.applyVoiceReply?.(normalizedCmd, ptt.composeId)
               })
               .catch(() => {
                 if (activeComposeTranscribe === pendingTranscribe) activeComposeTranscribe = null

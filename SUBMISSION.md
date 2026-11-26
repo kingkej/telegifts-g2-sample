@@ -19,7 +19,7 @@ Telegram Collectible Gifts trade 24/7 across five TON marketplaces (**Portals, T
 
 **Even Realities G2** solves this with a tight **Read + Write** micro-interaction loop:
 - **Read at a glance:** Brightness-graded (`textColor` `2 / 4 / 3`) 3-region waveguide HUD paired with `256 × 144` 16-shade UTC floor plots, 5-venue horizontal spread bar charts, and tilted 3D gift relief previews.
-- **Write in seconds:** When `/ask` arrives over SSE, a non-destructive `LIVE /ASK` alert surfaces on the G2 lens — tap (or hold the **R1 Ring** to voice-pick a draft via offline WASM speech recognition) to post a grounded threaded reply with an attached 7d or 5-venue spread PNG.
+- **Write in seconds:** When `/ask` or a reply-to-bot follow-up arrives over SSE, deterministic Answer-First Triage (`P1 / P2 / P3`) surfaces urgent Favorite/Watchlist/spread asks on the G2 lens while queuing low-priority chatter silently in a 1-screen `Pending` summary. Tap (sending `👀` + typing/upload status back to Telegram) to open intent-ranked drafts — or hold the **R1 Ring** to voice-pick offline or dictate a custom reply (with strict Tap-to-send) — and post a grounded threaded reply with a 7d or 5-venue spread PNG (marking the ask `👍`). Anyone in any Telegram chat can also invoke `@bot <gift>` via **Inline Mode** for instant snapshot cards.
 
 ---
 
@@ -43,7 +43,7 @@ flowchart LR
 
   subgraph Relay["Self-Hosted Telegram Bot Relay (server/telegramRelay.mjs)"]
     SSE["GET /g2/telegram/events\nAuthenticated SSE + Immediate Long-Poll"]
-    BOT["Telegram Bot API\n/ask · sendPhoto · Inline Callbacks"]
+    BOT["Telegram Bot API\n/ask · Follow-ups · 👀/👍 · sendPhoto · Inline Mode"]
   end
 
   RING --> Companion
@@ -64,7 +64,7 @@ flowchart LR
 | --- | --- | --- |
 | `createStartUpPageContainer` / `rebuildPageContainer` / `textContainerUpgrade` | 3-region spatial HUD (`header: 2` capped at 72B, `body: 4` with unique `isEventCapture: 1`, `footer: 3`) validated via `validateEvenHubPageContainer` | Browser Studio, Even Hub Simulator & unit tests |
 | `updateImageRawData` (`120 × 120` & `256 × 144`) | Streams 16-level grayscale gift artwork, tilted 3D relief models, `24h/7d/30d` UTC floor charts, and 5-venue spread bar charts | Browser Studio, Even Hub Simulator & unit tests |
-| `EventSourceType` (`RING`, `GLASSES_R`, `GLASSES_L`) + `LONG_PRESS` | R1 Ring push-to-talk draft selection in Smart Reply composer + live input-source badge | Browser Studio, Even Hub Simulator & unit tests |
+| `EventSourceType` (`RING`, `GLASSES_R`, `GLASSES_L`) + `LONG_PRESS` | R1 Ring push-to-talk offline draft selection and optional free-form LLM dictation (strict Tap-to-send) in Smart Reply composer + live input-source badge | Browser Studio, Even Hub Simulator & unit tests |
 | `audioControl` + `AudioSpeakerRole` (`self` vs `other`) | Offline JSGF voice commands & Ask Gifti for wearer (accepting all glasses PCM during active wearer sessions), plus bounded 12s IRL overheard lookup when idle | Browser Studio & unit tests (not yet tested on physical G2) |
 | `imuControl` + `IMU_DATA_REPORT` (`x, y, z`) | **Experimental** power-gated Head-Nod / Head-Shake alert triage enabled strictly during transient `LIVE /ASK` and watch-hit overlays | Browser Studio & unit tests (needs physical G2 calibration) |
 | `onLaunchSource` (`glassesMenu` vs `appMenu`) | Early-captured G2 OS menu launch opens straight into the **60s Morning Market Brief (`summary`)** | Browser Studio & unit tests |
@@ -86,9 +86,9 @@ npm run dev
    - Click **▶ Auto-Tour**, or use the G2 controls (`↑/↓/Enter/Esc/Space` when the lens is focused) and **🎤 Speak G2 Command (Real Mic)** (`16 kHz` WebAudio → offline `soundswallower` WASM).
    - Try the **Offline Gifti Analyst** (unlimited local rule-based queries, or paste an optional 1-time RAM-only `OpenAI / Gemini / Groq` key for live LLM & Whisper).
    - Check **Tools → User portfolio** with `@collector` (explicit synthetic demo) or any real public TON address (`EQ...` / `UQ...` / `.ton`) or Fragment collectible `@username` (live read-only TonAPI).
-   - Click **⚡ + Live /ask Alert** to test the heads-up interrupt, experimental IMU nod/shake simulation, and 1-tap Smart Reply.
+   - Click **⚡ + Live /ask Alert**, **⚡×3 Burst /asks**, or **📋 Pending** to test deterministic P1/P2/P3 triage, silent P3 queuing, intent-ranked 1-tap Smart Reply, and experimental IMU nod/shake simulation.
 2. **Official Even Hub Simulator (`576 × 288`):** Run `npm run simulate` in a second terminal (`evenhub-simulator http://localhost:3000/?raw=1`).
-3. **Optional Live Telegram Bot Relay:** Copy `.env.example` to `.env`, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` (plus optional `RELAY_ALLOWED_CHANNELS`), run `npm run relay`, and connect in **Explore → Telegram Setup**.
+3. **Optional Live Telegram Bot Relay:** Copy `.env.example` to `.env`, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` (plus optional `RELAY_ALLOWED_CHANNELS`, `RELAY_STATE_FILE`, and `/setinline` in `@BotFather` for `@bot <gift>` inline mode), run `npm run relay`, and connect in **Explore → Telegram Setup**.
 
 ---
 
